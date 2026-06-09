@@ -25,12 +25,16 @@ import time
 from decimal import Decimal
 from functools import lru_cache, partial
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from trackma import data
 from trackma import messenger
 from trackma import utils
 from trackma.extras import redirections
 from trackma.parser import get_parser_class
+
+if TYPE_CHECKING:
+    from trackma.tracker import TrackerBase
 
 
 class Engine:
@@ -50,11 +54,11 @@ class Engine:
     The **message_handler** is a reference to a messaging function for the engine
     to send to. Optional.
     """
-    data_handler = None
-    tracker = None
+    data_handler: data.Data
+    tracker: TrackerBase | None = None
     redirections = None
     config = {}
-    msg = None
+    msg: messenger.Messenger
     loaded = False
     playing = False
     hooks_available = []
