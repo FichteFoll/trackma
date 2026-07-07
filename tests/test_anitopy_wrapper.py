@@ -13,10 +13,19 @@ def test_anitopy_wrapper_ignores_non_episode_pv_title():
     assert parser.getEpisode() == 1
 
 
+# Note that this is misbehavior of anitopy but we still don't want to crash.
 def test_anitopy_wrapper_recovers_episode_from_title_when_decimal_is_misparsed():
     parser = _parse('2.5 Jigen no Ririsa E01 [1080p][E-AC-3][JapDub][GerSub][Web-DL].mkv')
 
     assert parser.getName() == 'Jigen no Ririsa E01'
+    assert parser.getEpisode() == 1
+
+
+# Same here
+def test_anitopy_wrapper_handles_dotted_episode_number_in_filename():
+    parser = _parse('Mr. Robot - Season 02 - 05 - eps2.3_logic-b0mb.hc Bluray-1080p.mkv')
+
+    assert parser.getName() == 'Mr. Robot Season 02'
     assert parser.getEpisode() == 1
 
 
