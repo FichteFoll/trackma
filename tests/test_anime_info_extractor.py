@@ -1,6 +1,7 @@
 from pprint import pprint
 
-from trackma.extras import AnimeInfoExtractor
+from trackma.messenger import Messenger
+from trackma.parser.animeinfoextractor import AnimeInfoExtractor
 
 DEFAULTS = {
     'resolution': '',
@@ -21,12 +22,16 @@ DEFAULTS = {
 }
 
 
+def _new_aie(filename):
+    return AnimeInfoExtractor(Messenger(None, 'Test'), filename)
+
+
 def _assert_aie(filename, **assertions):
     """Helper for asserting AnimeInfoExtractor results.
 
     Accepts a dict of assertions and asserts everything not provided as unchanged.
     """
-    aie = AnimeInfoExtractor(filename)
+    aie = _new_aie(filename)
     pprint(vars(aie))  # print details for quicker debugging on failure
     for key, default in DEFAULTS.items():
         expected = assertions.get(key, default)
