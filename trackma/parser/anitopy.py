@@ -16,6 +16,7 @@
 
 import re
 import os
+import sys
 import anitopy
 from decimal import Decimal
 
@@ -41,23 +42,25 @@ class AnitopyWrapper():
             self.msg.debug(f"Parsing {file_name}")
             data = anitopy.parse(file_name)
         except Exception:
-            # If Anitopy crashes while parsing a filename, print the traceback
-            # instead of crashing Trackma altogether.
-            import traceback
-            traceback.print_exc()
+            # If Anitopy crashes while parsing a filename, report the traceback
+            # instead of crashing the thread.
+            self.msg.exception(sys.exc_info())
             return
 
         try:
             self.episode_number = self.__extractEpisodeNumber(data)
         except Exception:
-            import traceback
-            traceback.print_exc()
+            self.msg.exception(sys.exc_info())
+
+        if self.episode_number is None:
+            self.msg.debug(
+                f"Could not parse episode number for {self.original_file_name!r}; falling back to 1"
+            )
 
         try:
             self.anime_title = self.__extractAnimeTitle(data)
         except Exception:
-            import traceback
-            traceback.print_exc()
+            self.msg.exception(sys.exc_info())
 
     def getName(self):
         # Returns the anime title
@@ -223,15 +226,15 @@ class AnitopyWrapper():
 
         return anime_title
 
-    @staticmethod
-    def __extractEpisodeNumber(data):
+    def __extractEpisodeNumber(self, data):
         # Deal with episode related stuff that Anitopy left out
         file_name = data.get('file_name', '')
         if AnitopyWrapper.__looks_like_query_string_input(data):
             return None
 
         if 'episode_number' not in data:
-            return AnitopyWrapper.__extractEpisodeNumberFromFilename(file_name)
+            episode_number = AnitopyWrapper.__extractEpisodeNumberFromFilename(file_name)
+            return episode_number
         episode_number = data['episode_number']
 
         # Handle cases like: "[Judas] Naruto - S05E01 (186).mkv"
@@ -248,7 +251,8 @@ class AnitopyWrapper():
         if episode_number is not None:
             return episode_number
 
-        return AnitopyWrapper.__extractEpisodeNumberFromFilename(file_name)
+        episode_number = AnitopyWrapper.__extractEpisodeNumberFromFilename(file_name)
+        return episode_number
 
     @staticmethod
     def __normalize_episode_number(episode_number):

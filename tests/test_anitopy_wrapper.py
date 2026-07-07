@@ -6,6 +6,15 @@ def _parse(filename):
     return AnitopyWrapper(Messenger(None, 'Test'), filename)
 
 
+def _parse_with_messages(filename):
+    messages = []
+
+    def handler(classname, msg_type, message):
+        messages.append((classname, msg_type, message))
+
+    return AnitopyWrapper(Messenger(handler, 'Test'), filename), messages
+
+
 def test_anitopy_wrapper_ignores_non_episode_pv_title():
     parser = _parse('Arknights 2024 Special Commemorative Animation PV')
 
@@ -55,6 +64,18 @@ def test_anitopy_wrapper_ignores_hash_like_filenames():
 
     assert parser.getName() is None
     assert parser.getEpisode() == 1
+
+
+def test_anitopy_wrapper_logs_when_episode_number_falls_back_to_default():
+    parser, messages = _parse_with_messages(
+        'Arknights 2024 Special Commemorative Animation PV'
+    )
+
+    assert parser.getEpisode() == 1
+    assert any(
+        msg_type == 1 and 'falling back to 1' in message
+        for _, msg_type, message in messages
+    )
 
 
 def test_anitopy_wrapper_allows_simple_suffix_after_episode_number():
