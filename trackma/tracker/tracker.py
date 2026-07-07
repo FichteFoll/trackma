@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import os
+import sys
 import threading
 import time
 from collections.abc import Callable
@@ -132,8 +133,7 @@ class TrackerBase:
 
     def _emit_signal(self, signal, *args):
         try:
-            callback = self.signals[signal]
-            if callback is not None:
+            if callback := self.signals[signal]:
                 callback(*args)
         except KeyError:
             raise Exception("Call to undefined signal.")
@@ -254,41 +254,53 @@ class TrackerBase:
     def resolve_playing_show(self, filename: str | None) -> TrackerResolution:
         if not self.active:
             # Don't do anything if the Tracker is disabled
-            return TrackerResolution.NO_VIDEO()
-        elif not filename:
-            return TrackerResolution.NO_VIDEO()
+            return (utils.Tracker.NOVIDEO, None)
 
-        self.msg.debug("Guessing filename: {}".format(filename))
+        if filename:
+            if filename == self.last_filename:
+                # It's the exact same filename, there's no need to do the processing again
+                return (self.last_state, self.last_show_tuple)
 
-        # Trim out watch dir
-        if os.path.isabs(filename):
-            for watch_prefix in self.watch_dirs:
-                if filename.startswith(watch_prefix):
-                    filename = filename[len(watch_prefix):].lstrip(os.path.sep)
-                    break
+            self.last_filename = filename
+            self.msg.debug("Guessing filename: {}".format(filename))
 
-        # Invoke the parser to extract show title and episode.
-        aie = self.parser_class(self.msg, filename)
-        (show_title, show_ep) = (aie.getName(), aie.getEpisode())
-        if not show_title:
-            # Format not recognized
-            return TrackerResolution.UNRECOGNIZED()
+            # Trim out watch dir
+            if os.path.isabs(filename):
+                for watch_prefix in self.watch_dirs:
+                    if filename.startswith(watch_prefix):
+                        filename = filename[len(watch_prefix):].lstrip(os.path.sep)
+                        break
 
-        playing_show = utils.guess_show(show_title, self.list)
-        self.msg.debug("Show guess: {}: {} - {}".format(show_title, playing_show, show_ep))
+            # Invoke the parser to extract show title and episode.
+            try:
+                aie = self.parser_class(self.msg, filename)
+                (show_title, show_ep) = (aie.getName(), aie.getEpisode())
+            except Exception:
+                self.msg.exception('Failed to parse filename', sys.exc_info())
+                return (utils.Tracker.UNRECOGNIZED, None)
+            if not show_title:
+                # Format not recognized
+                return (utils.Tracker.UNRECOGNIZED, None)
 
-        if playing_show:
-            (redirected_show, redirected_ep) = utils.redirect_show(
-                (playing_show, show_ep), self.redirections, self.list)
-            if (redirected_show, redirected_ep) != (playing_show, show_ep):
-                self.msg.debug("Redirected to: {} - {}".format(redirected_show, redirected_ep))
-                (playing_show, show_ep) = (redirected_show, redirected_ep)
+            playing_show = utils.guess_show(show_title, self.list)
+            self.msg.debug("Show guess: {}: {} - {}".format(show_title, playing_show, show_ep))
 
-            state = utils.Tracker.PLAYING
-            if self._should_ignore(playing_show, show_ep):
-                state = utils.Tracker.IGNORED
-            return TrackerResolution(state, playing_show, show_ep)
+            if playing_show:
+                (redirected_show, redirected_ep) = utils.redirect_show(
+                    (playing_show, show_ep), self.redirections, self.list)
+                if (redirected_show, redirected_ep) != (playing_show, show_ep):
+                    self.msg.debug("Redirected to: {} - {}".format(redirected_show, redirected_ep))
+                    (playing_show, show_ep) = (redirected_show, redirected_ep)
 
+                return (utils.Tracker.PLAYING, (playing_show, show_ep))
+            else:
+                # Show not in list
+                if self.config['tracker_not_found_prompt']:
+                    # Dummy show to search for
+                    show = {'id': 0, 'title': show_title}
+                    return (utils.Tracker.NOT_FOUND, (show, show_ep))
+                else:
+                    return (utils.Tracker.NOT_FOUND, None)
         else:
             # Show not in list
             if self.config['tracker_not_found_prompt']:
