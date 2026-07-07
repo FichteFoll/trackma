@@ -30,6 +30,8 @@ class AnitopyWrapper():
     def __init__(self, msg, file_name):
         self.msg = msg.with_classname('Parser')
         self.original_file_name = file_name
+        self.episode_number = None
+        self.anime_title = None
 
         file_name = self.__preProcessFileName(file_name)
         file_name = self.__trimFileName(file_name)
@@ -43,11 +45,19 @@ class AnitopyWrapper():
             # instead of crashing Trackma altogether.
             import traceback
             traceback.print_exc()
-            data = {}
             return
 
-        self.episode_number = self.__extractEpisodeNumber(data)
-        self.anime_title = self.__extractAnimeTitle(data)
+        try:
+            self.episode_number = self.__extractEpisodeNumber(data)
+        except Exception:
+            import traceback
+            traceback.print_exc()
+
+        try:
+            self.anime_title = self.__extractAnimeTitle(data)
+        except Exception:
+            import traceback
+            traceback.print_exc()
 
     def getName(self):
         # Returns the anime title
@@ -55,13 +65,13 @@ class AnitopyWrapper():
 
     def getEpisode(self):
         # Returns the first/only episode number
-        if self.episode_number is None:
+        episode_number = self.episode_number
+        if episode_number is None:
             return 1
 
-        if type(self.episode_number) is list:
-            return int(self.episode_number[-1])
-        else:
-            return int(self.episode_number)
+        if isinstance(episode_number, list):
+            episode_number = episode_number[-1]
+        return int(episode_number)
 
     def getEpisodeNumbers(self, force_numbers=False):
         # Returns the episode range as a tuple
@@ -158,6 +168,9 @@ class AnitopyWrapper():
     @staticmethod
     def __extractAnimeTitle(data):
         # Deal with anime title related stuff that Anitopy left out
+        if AnitopyWrapper.__looks_like_query_string_input(data):
+            return None
+
         if 'anime_title' not in data:
             return None
         anime_title = data['anime_title']
@@ -208,8 +221,12 @@ class AnitopyWrapper():
     @staticmethod
     def __extractEpisodeNumber(data):
         # Deal with episode related stuff that Anitopy left out
+        file_name = data.get('file_name', '')
+        if AnitopyWrapper.__looks_like_query_string_input(data):
+            return None
+
         if 'episode_number' not in data:
-            return
+            return AnitopyWrapper.__extractEpisodeNumberFromFilename(file_name)
         episode_number = data['episode_number']
 
         # Handle cases like: "[Judas] Naruto - S05E01 (186).mkv"
@@ -222,7 +239,73 @@ class AnitopyWrapper():
                 del data['anime_season']
 
         # Unfortunately, we can't have episode numbers like 1A, 1B, 1C etc.
-        if isinstance(data['episode_number'], str):
-            episode_number = re.sub(r'ABCabc', r'', episode_number)
+        episode_number = AnitopyWrapper.__normalize_episode_number(episode_number)
+        if episode_number is not None:
+            return episode_number
 
-        return episode_number
+        return AnitopyWrapper.__extractEpisodeNumberFromFilename(file_name)
+
+    @staticmethod
+    def __normalize_episode_number(episode_number):
+        if isinstance(episode_number, list):
+            normalized = [
+                normalized_item
+                for item in episode_number
+                if (normalized_item := AnitopyWrapper.__normalize_episode_number(item)) is not None
+            ]
+            return normalized or None
+
+        if not isinstance(episode_number, str):
+            return episode_number
+
+        episode_number = episode_number.strip()
+        if not episode_number:
+            return None
+
+        if re.fullmatch(r'\d+', episode_number):
+            return episode_number
+
+        if re.fullmatch(r'\d+[ABCabc]', episode_number):
+            return episode_number[:-1]
+
+        if re.fullmatch(r'\d+[Pp:]', episode_number):
+            return episode_number[:-1]
+
+        range_match = re.fullmatch(r'(\d+)-E?(\d+)', episode_number)
+        if range_match:
+            return [range_match.group(1), range_match.group(2)]
+
+        return None
+
+    @staticmethod
+    def __extractEpisodeNumberFromFilename(file_name):
+        range_match = re.search(
+            r'(?:^|[^A-Za-z0-9])E(?:p(?:isode)?)?\s*(\d+)\s*-\s*E?(?:p(?:isode)?)?\s*(\d+)\b',
+            file_name,
+        )
+        if range_match:
+            return [range_match.group(1), range_match.group(2)]
+
+        season_match = re.search(r'(?:^|[^A-Za-z0-9])S\d+\s*:\s*E(\d+)\b', file_name)
+        if season_match:
+            return season_match.group(1)
+
+        single_match = re.search(
+            r'(?:^|[^A-Za-z0-9])E(?:p(?:isode)?)?\s*(\d+)(?=(?:\b|[:.)\]\s-]|$))',
+            file_name,
+        )
+        if single_match:
+            return single_match.group(1)
+
+        return None
+
+    @staticmethod
+    def __looks_like_query_string_input(data):
+        file_name = data.get('file_name', '').strip()
+        if not file_name or re.search(r'\s', file_name):
+            return False
+
+        if re.match(r'^[a-z]+://', file_name, flags=re.IGNORECASE):
+            return True
+
+        return bool(re.match(r'^[^\s?]+\?[^\s=]+=[^\s&]+(?:&[^\s=]+=[^\s&]+)*$', file_name))
