@@ -479,19 +479,6 @@ class Engine:
         showlist = self.data_handler.get()
         return list(v for v in showlist.values() if re.search(regex, v['title'], re.I))
 
-    def regex_list_titles(self, pattern):
-        # TODO : Temporal hack for the client autocomplete function
-        showlist = self.data_handler.get()
-        newlist = list()
-        for v in showlist.values():
-            if re.match(pattern, v['title'], re.I):
-                if ' ' in v['title']:
-                    newlist.append('"' + v['title'] + '" ')
-                else:
-                    newlist.append(v['title'] + ' ')
-
-        return newlist
-
     def tracker_status(self):
         """
         Asks the tracker for its current status.

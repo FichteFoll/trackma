@@ -35,7 +35,7 @@ classifiers = [
     "Operating System :: POSIX",
     "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
 ]
-dependencies = []
+dependencies = ["prompt_toolkit>=3.0.0,<4.0.0"]
 
 [project.optional-dependencies]
 gtk = [
