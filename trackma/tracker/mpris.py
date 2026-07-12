@@ -458,4 +458,5 @@ class MprisTracker(TrackerBase):
 
     def _on_tracker_tick(self, view_offset: float | None) -> None:
         self.view_offset = view_offset
+        # TODO we should make the timer self-update and not only trigger this from mpris
         self.update_timer()
