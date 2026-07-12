@@ -110,7 +110,7 @@ according to the user interface you plan to use, and then run the
 following command:
 
 ```sh
-$ pip3 install Trackma
+$ pip3 install trackma
 ```
 
 You can also install the git (probably unstable, but newer) version like this:
