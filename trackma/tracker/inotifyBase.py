@@ -19,10 +19,10 @@ import re
 import time
 
 from trackma import utils
-from trackma.tracker import tracker
+from .tracker import TrackerBase
 
 
-class inotifyBase(tracker.TrackerBase):
+class inotifyBase(TrackerBase):
     open_file = (None, None, None)
 
     def __init__(self, messenger, tracker_list, config, watch_dirs, redirections=None):
@@ -117,12 +117,10 @@ class inotifyBase(tracker.TrackerBase):
             self._emit_signal('detected', path, name)
             self.open_file = (pathname, pid, fd)
 
-            if self.config['library_full_path']:
-                (state, show_tuple) = self._get_playing_show(pathname)
-            else:
-                (state, show_tuple) = self._get_playing_show(name)
-            self.msg.debug("Got status: {} {}".format(state, show_tuple))
-            self.update_show_if_needed(state, show_tuple)
+            filename = pathname if self.config['library_full_path'] else name
+            resolution = self.resolve_playing_show(filename)
+            self.msg.debug("Got status: {}".format(resolution))
+            self.update_show_if_needed(resolution, filename)
         else:
             self.msg.debug("Not played by player, ignoring.")
 
@@ -143,5 +141,5 @@ class inotifyBase(tracker.TrackerBase):
         self._emit_signal('detected', path, name)
         self.open_file = (None, None, None)
 
-        (state, show_tuple) = self._get_playing_show(None)
-        self.update_show_if_needed(state, show_tuple)
+        resolution = self.resolve_playing_show(None)
+        self.update_show_if_needed(resolution, None)

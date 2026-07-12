@@ -15,24 +15,32 @@
 #
 from __future__ import annotations
 
-from enum import Enum
+import asyncio
 import os
 import re
 import sys
 import threading
 import time
 import urllib.parse
-import asyncio
-from typing import Any
-from dataclasses import dataclass
 from collections import deque
+from collections.abc import Callable
+from dataclasses import dataclass
+from enum import Enum
+from typing import Any
 
-from jeepney import HeaderFields, Properties, DBusAddress
-from jeepney.io.asyncio import open_dbus_router, DBusRouter, Proxy
-from jeepney.bus_messages import message_bus, MatchRule
+from jeepney import DBusAddress, HeaderFields, Properties
+from jeepney.bus_messages import MatchRule, message_bus
+from jeepney.io.asyncio import DBusRouter, Proxy, open_dbus_router
 
 from trackma import utils
-from trackma.tracker import tracker
+
+from .tracker import (
+    OnPlaybackCallback,
+    OnStateCallback,
+    OnTickCallback,
+    TrackerBase,
+    TrackerResolution,
+)
 
 __all__ = [
     'MprisTracker',
@@ -99,8 +107,7 @@ class Player:
             if self.config['library_full_path'] and unquoted_url.startswith('file://'):
                 return unquoted_url.removeprefix('file://')
             return os.path.basename(unquoted_url)
-        else:
-            return self.title
+        return self.title
 
     async def update_filename(self):
         msg = self._player_properties.get('Metadata')
@@ -129,49 +136,36 @@ class Player:
         return Properties(address)
 
 
-class MprisTracker(tracker.TrackerBase):
+class MprisDbusWatcher:
 
-    name = 'Tracker (MPRIS)'
-
-    def __init__(self, *args, **kwargs):
-        # `TrackerBase.__init__` spawns a new thread for `observe`
-        # where we wait for this event.
-        self.initialized = threading.Event()
-        super().__init__(*args, **kwargs)
+    def __init__(
+        self,
+        config: dict[str, Any],
+        msg,
+        resolve_playing_show: Callable[[str | None], TrackerResolution],
+        on_state: OnStateCallback,
+        on_playback: OnPlaybackCallback,
+        on_tick: OnTickCallback,
+    ):
+        # Note: all these should be considered private.
+        self.config = config
+        self.msg = msg
+        self.resolve_playing_show: Callable[[str | None], TrackerResolution] = resolve_playing_show
+        self.on_state: OnStateCallback = on_state
+        self.on_playback: OnPlaybackCallback = on_playback
+        self.on_tick: OnTickCallback = on_tick
 
         self.re_players = re.compile(self.config['tracker_process'])
         # Map "OwnerName"s to Player instances
         # for monitoring when one appears or disappears
         # via the `NameOwnerChanged` signal.
-        self.players = {}
+        self.players: dict[str, Player] = {}
+        self.active_player: Player | None = None
+        self.active_filename: str | None = None
+        self.active_resolution: TrackerResolution = TrackerResolution.NO_VIDEO()
         self.timing = False
-        self.active_player = None
-        self.initialized.set()
 
-    def update_list(self, *args, **kwargs):
-        super().update_list(*args, **kwargs)
-        if self.last_state != utils.Tracker.PLAYING:
-            # Re-check if we have any player with a valid show running after a list update
-            self.last_filename = None
-            self.find_playing_player()
-
-    def observe(self, config, watch_dirs):
-        self.msg.info("Using MPRIS.")
-        self.initialized.wait()
-
-        # Permit 5 starts within 60 seconds,
-        # waiting for 5s between each retry.
-        # If it fails more frequently,
-        # we consider the tracker to be broken and let it die.
-        start_times = deque(maxlen=5)
-        while len(start_times) < 5 or start_times[0] + 60 < time.time():
-            start_times.append(time.time())
-            asyncio.run(self.observe_async())
-            time.sleep(5)
-
-        self.msg.warn("Reached restart limit for MPRIS tracker.")
-
-    async def observe_async(self):
+    async def run(self):
         async with open_dbus_router() as router:
             name_owner_watcher_task = asyncio.create_task(self.name_owner_watcher(router))
             properties_watcher_task = asyncio.create_task(self.properties_watcher(router))
@@ -188,7 +182,8 @@ class MprisTracker(tracker.TrackerBase):
             self.msg.debug(f"Ignoring players: {ignored_players}")
             for player in self.players.values():
                 self.msg.debug(f"Player connected: {player.wellknown_name}")
-            self.find_playing_player()
+
+            self.reselect()
 
             try:
                 await asyncio.gather(*tasks)
@@ -223,7 +218,7 @@ class MprisTracker(tracker.TrackerBase):
                 msg = await queue.get()
                 (wellknown_name, old_name, new_name) = msg.body
                 if old_name:
-                    self.on_bus_removed(wellknown_name, old_name)
+                    self.on_bus_removed(old_name)
                 if new_name:
                     await self.on_bus_added(router, wellknown_name, new_name)
 
@@ -237,14 +232,14 @@ class MprisTracker(tracker.TrackerBase):
         self.players[unique_name] = player
         self._handle_player_update(player)
 
-    def on_bus_removed(self, wellknown_name, unique_name):
+    def on_bus_removed(self, unique_name):
         player = self.players.pop(unique_name, None)
         if not player:
             return
         self.msg.debug(f"Player disconnected: {player.wellknown_name}")
         if player == self.active_player:
-            self._handle_player_stopped()
-            self.active_player = None
+            self.clear_state()
+            self.reselect()
 
     async def properties_watcher(self, router):
         # Select PropertiesChanged signals for the mpris-player subinterface
@@ -283,26 +278,34 @@ class MprisTracker(tracker.TrackerBase):
         except TypeError as e:
             self.msg.warn(f"Failed to read properties for {sender}: {e}")
 
-    def valid_player(self, wellknown_name):
+    def valid_player(self, wellknown_name: str) -> re.Match[str] | None:
         return self.re_players.search(wellknown_name)
 
-    def find_playing_player(self) -> bool:
+    def reselect(self):
+        # Prioritize active player if it is still playing.
+        if (
+            self.active_player
+            and self.active_player.playback_status == PlaybackStatus.PLAYING
+            and self._activate_player(self.active_player)
+        ):
+            return
+
         # Go through all connected players in random order
         # (or not since dicts are ordered now).
-        return any(
-            self._update_active_player(player, probing=True)
-            for player in self.players.values()
-            if player.playback_status == PlaybackStatus.PLAYING
-        )
+        for player in self.players.values():
+            if player.playback_status == PlaybackStatus.PLAYING and self._activate_player(player):
+                return
 
-    def on_playback_status_change(self, sender, playback_status):
+        self.clear_state()
+
+    def on_playback_status_change(self, sender: str, playback_status: str) -> None:
         player = self.players.get(sender)
         if not player:
             return
         player.playback_status = playback_status
         self._handle_player_update(player)
 
-    def on_filename_change(self, sender, title, url):
+    def on_filename_change(self, sender: str, title: str | None, url: str | None) -> None:
         player = self.players.get(sender)
         if not player:
             return
@@ -310,82 +313,81 @@ class MprisTracker(tracker.TrackerBase):
         player.url = url
         self._handle_player_update(player)
 
-    def _handle_player_update(self, player):
+    def _handle_player_update(self, player: Player) -> None:
         if player == self.active_player:
             if player.playback_status == PlaybackStatus.STOPPED:
-                self._handle_player_stopped()
+                self.clear_state()
+                self.reselect()
             else:
-                self._update_active_player(player)
+                resolution = self._resolve_player(player)
+                self._commit_resolution(resolution)
 
-        elif self.active_player and self.active_player.playback_status == PlaybackStatus.PLAYING:
+        elif (
+            self.active_player
+            and self.active_player.playback_status == PlaybackStatus.PLAYING
+            and self.active_resolution.state == utils.Tracker.PLAYING
+        ):
             self.msg.debug("Still playing on active player; ignoring update")
-            return
 
         elif player.playback_status == PlaybackStatus.PLAYING:
-            self._update_active_player(player)
+            self._activate_player(player)
 
-    def _update_active_player(self, player: Player, probing=False) -> bool:
-        is_new_player = player != self.active_player
+    def _activate_player(self, player: Player) -> bool:
+        resolution = self._resolve_player(player)
 
-        (state, show_tuple) = (None, None)
-        previous_last_filename = self.last_filename
-        new_show = False
-        if player.filename != self.last_filename:
-            (state, show_tuple) = self._get_playing_show(player.filename)
-            if state in [utils.Tracker.UNRECOGNIZED, utils.Tracker.NOT_FOUND]:
-                self.msg.debug("Video not recognized")
-            elif state == utils.Tracker.NOVIDEO:
-                self.msg.debug("No video loaded")
-            else:
-                new_show = True
-
-        if is_new_player and not new_show:
-            if probing:
-                # Ignore this 'new' player & restore `last_filename`
-                # since we're just looking for a new player candidate.
-                # (This is a hack but a proper fix needs larger refactoring
-                # involving the parent class.)
-                self.last_filename = previous_last_filename
-            return False
-
-        if is_new_player and new_show:
+        if player != self.active_player:
             self.msg.debug(f"Setting active player: {player.wellknown_name}")
             self.active_player = player
 
-        if state:
-            self.msg.debug(f"New tracker status: {state} (previously: {self.last_state})")
-            self.update_show_if_needed(state, show_tuple)
+        self._commit_resolution(resolution)
+        return resolution.state == utils.Tracker.PLAYING
 
-        if player.playback_status == PlaybackStatus.PLAYING:
-            self._start_timer()
-        else:
-            self._stop_timer()
+    def _resolve_player(self, player: Player) -> TrackerResolution:
+        filename = player.filename
+        if filename == self.active_filename:
+            return self.active_resolution
 
-        return True
+        return self.resolve_playing_show(filename)
 
-    def _handle_player_stopped(self):
-        # Active player got closed!
+    def _commit_resolution(
+        self,
+        resolution: TrackerResolution,
+    ) -> None:
+        if not self.active_player:
+            return
+
+        playing = (
+            self.active_player.playback_status == PlaybackStatus.PLAYING
+            and resolution.state == utils.Tracker.PLAYING
+        )
+        self._set_timer_state(playing)
+
+        if resolution == self.active_resolution:
+            return
+
+        self.msg.debug(f"New tracker status: {resolution.state} (previously: {self.active_resolution[0]})")
+        self.active_resolution = resolution
+        self.active_filename = self.active_player.filename
+        self.on_state(resolution, self.active_player.filename)
+
+    def clear_state(self) -> None:
         if self.active_player:
             self.msg.debug(f"Clearing active player: {self.active_player.wellknown_name}")
         self.active_player = None
-        self.view_offset = None
+        self.active_filename = None
+        self.active_resolution = TrackerResolution.NO_VIDEO()
+        self.on_state(TrackerResolution.NO_VIDEO(), None)
+        self._set_timer_state(False)
 
-        if not self.find_playing_player():
-            (state, show_tuple) = self._get_playing_show(None)
-            self.update_show_if_needed(state, show_tuple)
-            self._stop_timer()
-
-    def _start_timer(self):
-        self.resume_timer()
-        if not self.timing:
+    def _set_timer_state(self, playing: bool) -> None:
+        if playing and not self.timing:
             self.timing = True
             self.msg.debug("MPRIS timer started.")
-
-    def _stop_timer(self):
-        self.pause_timer()
-        if self.timing:
+            self.on_playback(True)
+        elif not playing and self.timing:
             self.timing = False
             self.msg.debug("MPRIS timer paused.")
+            self.on_playback(False)
 
     async def _timer(self):
         while True:
@@ -393,17 +395,67 @@ class MprisTracker(tracker.TrackerBase):
                 await self._on_tick()
             await asyncio.sleep(1, True)
 
-    async def _on_tick(self):
+    async def _on_tick(self) -> None:
         if self.active_player:
             try:
-                self.view_offset = int(await self.active_player.get_position()) / 1000
+                position = await self.active_player.get_position()
+                view_offset = int(position) / 1000 if position is not None else None
             except TypeError:
-                self.view_offset = None
-                # The view_offset is not important, so we ignore errors.
-                pass
+                view_offset = None
+        else:
+            view_offset = None
 
-        if self.last_show_tuple:
-            self.update_timer(self.last_state, self.last_show_tuple)
+        self.on_tick(view_offset)
 
-        if self.last_updated:
-            self._stop_timer()
+
+class MprisTracker(TrackerBase):
+
+    name = 'Tracker (MPRIS)'
+
+    def __init__(self, *args, **kwargs):
+        self.initialized = threading.Event()
+        super().__init__(*args, **kwargs)
+
+        self.watcher = MprisDbusWatcher(
+            self.config,
+            self.msg,
+            resolve_playing_show=self.resolve_playing_show,
+            on_state=self._on_tracker_state,
+            on_playback=self._on_tracker_playback,
+            on_tick=self._on_tracker_tick,
+        )
+        self.initialized.set()
+
+    def update_list(self, *args, **kwargs):
+        super().update_list(*args, **kwargs)
+        self.watcher.clear_state()
+        self.watcher.reselect()
+
+    def observe(self, _config, _watch_dirs):
+        self.msg.info("Using MPRIS.")
+        self.initialized.wait()
+
+        start_times = deque(maxlen=5)
+        while len(start_times) < 5 or start_times[0] + 60 < time.time():
+            start_times.append(time.time())
+            asyncio.run(self.watcher.run())
+            time.sleep(5)
+
+        self.msg.warn("Reached restart limit for MPRIS tracker.")
+
+    def _on_tracker_state(
+        self,
+        resolution: TrackerResolution,
+        filename: str | None,
+    ) -> None:
+        self.update_show_if_needed(resolution, filename)
+
+    def _on_tracker_playback(self, playing: bool) -> None:
+        if playing:
+            self.resume_timer()
+        else:
+            self.pause_timer()
+
+    def _on_tracker_tick(self, view_offset: float | None) -> None:
+        self.view_offset = view_offset
+        self.update_timer()

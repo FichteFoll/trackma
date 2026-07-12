@@ -15,12 +15,12 @@
 
 # TODO: Add gui stuff for this
 
+import json
 import os
 import time
 import urllib.request
-import json
 
-from trackma.tracker import tracker
+from .tracker import TrackerBase
 
 NOT_RUNNING = 0
 ACTIVE = 1
@@ -30,7 +30,7 @@ PAUSED = 4
 IDLE = 5
 
 
-class JellyfinTracker(tracker.TrackerBase):
+class JellyfinTracker(TrackerBase):
     name = 'Tracker (Jellyfin)'
 
     def __init__(self, messenger, tracker_list, config, watch_dirs, redirections=None):
@@ -57,11 +57,11 @@ class JellyfinTracker(tracker.TrackerBase):
                     self.wait_s = config['tracker_update_wait_s']
 
                 try:
-                    (state, show_tuple) = self._get_playing_show(session_info['file_name'])
+                    resolution = self.resolve_playing_show(session_info['file_name'])
 
                     self.view_offset = int(session_info['view_offset'])
 
-                    self.update_show_if_needed(state, show_tuple)
+                    self.update_show_if_needed(resolution, session_info['file_name'])
 
                     if session_info['state'] == PAUSED:
                         self.pause_timer()
@@ -70,8 +70,7 @@ class JellyfinTracker(tracker.TrackerBase):
 
                 except (IndexError, TypeError):
                     if self.status_log[-1] == IDLE:
-                        self.last_filename = None
-                        self.update_show_if_needed(0, None)
+                        self.update_show_if_needed(self.resolve_playing_show(None), None)
                     else:
                         pass
 
