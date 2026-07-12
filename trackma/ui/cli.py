@@ -813,27 +813,24 @@ class Trackma_cmd(command.Cmd):
         the engine messenger to provide feedback.
         """
         color_escape = ''
-        color_reset = _COLOR_RESET
+        match classname:
+            case 'Engine':
+                color_escape = _COLOR_ENGINE
+            case 'Data':
+                color_escape = _COLOR_DATA
+            case x if x.startswith('lib'):
+                color_escape = _COLOR_API
+            case x if x.startswith('Tracker'):
+                color_escape = _COLOR_TRACKER
 
-        if classname == 'Engine':
-            color_escape = _COLOR_ENGINE
-        elif classname == 'Data':
-            color_escape = _COLOR_DATA
-        elif classname.startswith('lib'):
-            color_escape = _COLOR_API
-        elif classname.startswith('Tracker'):
-            color_escape = _COLOR_TRACKER
-        else:
-            color_reset = ''
+        color_reset = _COLOR_RESET if color_escape else ''
 
         if msgtype == messenger.TYPE_INFO:
-            out = "%s%s: %s%s" % (color_escape, classname, msg, color_reset)
+            out = f"{color_escape}{classname}: {msg}{color_reset}"
         elif msgtype == messenger.TYPE_WARN:
-            out = "%s%s warning: %s%s" % (
-                color_escape, classname, msg, color_reset)
+            out = f"{color_escape}{classname} warning: {msg}{color_reset}"
         elif self.debug and msgtype == messenger.TYPE_DEBUG:
-            out = "[D] %s%s: %s%s" % (
-                color_escape, classname, msg, color_reset)
+            out = f"[D] {color_escape}{classname}: {msg}{color_reset}"
         else:
             return  # Unrecognized message, don't show anything
 
