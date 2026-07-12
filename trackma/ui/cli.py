@@ -376,12 +376,11 @@ class Trackma_cmd(command.Cmd):
             self.display_error(e)
             return
 
-        altnames = self.engine.altnames()
-        altname = altnames.get(show['id'])
         print(show['title'])
         print("-" * len(show['title']))
         print(show['url'])
         print()
+        altnames = self.engine.altnames()
         if altname := altnames.get(show['id']):
             print(f"Altname: {altname}")
 
