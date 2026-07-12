@@ -53,6 +53,30 @@ class TrackerResolution(NamedTuple):
 OnStateCallback = Callable[[TrackerResolution, str | None], None]
 
 
+class TrackerTimer:
+    def __init__(self, paused: bool = False):
+        self.started_at = time.time()
+        self.paused_at = self.started_at if paused else None
+        self.paused_total = 0.0
+
+    @property
+    def paused(self) -> bool:
+        return self.paused_at is not None
+
+    def pause(self) -> None:
+        if self.paused_at is None:
+            self.paused_at = time.time()
+
+    def resume(self) -> None:
+        if self.paused_at is not None:
+            self.paused_total += time.time() - self.paused_at
+            self.paused_at = None
+
+    def elapsed(self) -> float:
+        end_at = self.paused_at if self.paused_at is not None else time.time()
+        return end_at - self.started_at - self.paused_total
+
+
 class TrackerBase:
     msg: Messenger
     active = True
@@ -60,10 +84,9 @@ class TrackerBase:
     last_resolution = None
     last_filename = None
     last_state = utils.Tracker.NOVIDEO
-    last_time: int | float = 0
     last_updated = False
     last_close_queue: Callable[[], None] | None = None
-    timer = None
+    timer: TrackerTimer | None = None
 
     name = 'Tracker'
 
@@ -88,8 +111,6 @@ class TrackerBase:
         self.wait_s = None
 
         self.timer = None
-        self.timer_paused = None
-        self.timer_offset = 0
         self.parser_class = get_parser_class(self.msg, self.config['title_parser'])
 
         self.view_offset = None
@@ -122,11 +143,19 @@ class TrackerBase:
         raise NotImplementedError
 
     def get_status(self):
+        timer = None
+        if self.timer is not None:
+            timer = int(
+                1
+                + (self.wait_s or self.config['tracker_update_wait_s'])
+                - self.timer.elapsed()
+            )
+
         return {
             'state': self.last_state,
-            'timer': self.timer,
+            'timer': timer,
             'viewOffset': self.view_offset,
-            'paused': bool(self.timer_paused),
+            'paused': bool(self.timer and self.timer.paused),
             'show': self.last_resolution.show_tuple() if self.last_resolution else None,
             'filename': self.last_filename,
         }
@@ -138,24 +167,20 @@ class TrackerBase:
         except KeyError:
             raise Exception("Call to undefined signal.")
 
-    def update_timer(self, resolution: TrackerResolution | None = None) -> None:
-        if self.timer_paused:
+    def update_timer(self) -> None:
+        if not self.timer or self.timer.paused or self.last_updated:
             return
 
-        resolution = resolution or self.last_resolution
+        resolution = self.last_resolution
         if not resolution or not resolution.show or resolution.show_ep is None or resolution.state != utils.Tracker.PLAYING:
             self.timer = None
             return
 
-        self.timer = int(
-            1
-            + (self.wait_s or self.config['tracker_update_wait_s'])
-            + self.timer_offset
-            - (time.time() - self.last_time)
-        )
-        self._emit_signal('state', self.get_status())
+        # This computes the elapsed time.
+        status = self.get_status()
+        self._emit_signal('state', status)
 
-        if self.timer <= 0:
+        if (status['timer'] or 0) <= 0:
             # Perform show update
             self.last_updated = True
 
@@ -177,12 +202,9 @@ class TrackerBase:
             self.last_close_queue()
             self.last_close_queue = None
 
-        # Clear up pause and set our new time offset
-        self.timer_paused = None
-        self.timer_offset = 0
-        self.last_time = time.time()
+        self.timer = None
 
-        # Emit the new playing signal
+        # Signal that the "current" episode stopped playing.
         if self.last_resolution:
             last_show = self.last_resolution.show
             last_show_ep = self.last_resolution.show_ep
@@ -193,43 +215,49 @@ class TrackerBase:
                     'playing', last_show['id'], False, last_show_ep)
 
     def pause_timer(self) -> None:
-        if not self.timer_paused:
-            self.timer_paused = time.time()
+        if self.timer:
+            self.timer.pause()
 
             self._emit_signal('state', self.get_status())
 
     def resume_timer(self) -> None:
-        if self.timer_paused:
-            self.timer_offset += time.time() - self.timer_paused
-            self.timer_paused = None
+        if self.timer:
+            self.timer.resume()
 
             self._emit_signal('state', self.get_status())
 
     def update_show_if_needed(self, resolution: TrackerResolution, filename: str | None = None):
         self.last_filename = filename
 
-        # If the state and show are unchanged, skip to countdown
-        if resolution == self.last_resolution and not self.last_updated:
-            self.update_timer(resolution)
+        if resolution == self.last_resolution:
+            self.update_timer()
             return
 
         show_tuple = resolution.show_tuple()
-        if resolution != self.last_resolution and show_tuple:
-            (show, episode) = show_tuple
-            self._prepare_state_change()
-            # There's a new show/ep detected, so let's save the show information
-            self.last_resolution = resolution
-            self.last_updated = False  # TODO do we need to set this to True if IGNORED?
-            if resolution.state == utils.Tracker.PLAYING:
-                self._emit_signal('playing', show['id'], True, episode)
+        if resolution.state == utils.Tracker.IGNORED:
+            if self.last_resolution and show_tuple == self.last_resolution.show_tuple():
+                self.timer = None
+            # The state should be ignored.
+            return
 
-            # Start our countdown
+        elif show_tuple:
+            # A new show/ep pair was found that should result in an update eventually.
+            self._prepare_state_change()
+            (show, episode) = show_tuple
+            self._emit_signal('playing', show['id'], True, episode)
+
             if resolution.state == utils.Tracker.PLAYING:
                 self.msg.info('Will update %s - %d' % (show['title'], episode))
             elif resolution.state == utils.Tracker.NOT_FOUND:
                 self.msg.info('Will add %s - %d' % (show['title'], episode))
+            else:
+                self.msg.warn(f"Some state transition was not considered. {self.last_resolution} => {resolution}")
 
-            self.update_timer(resolution)
+            self.last_resolution = resolution
+            self.last_updated = False
+            self.timer = TrackerTimer()
+            self.update_timer()
+
         elif self.last_state != resolution.state:
             self._prepare_state_change()
 
