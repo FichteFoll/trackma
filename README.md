@@ -59,8 +59,8 @@ Dependencies
 
 The only required dependencies to run Trackma are:
 
-- Python 3.9+
-- For installation: `python-pip` (to install through `pip`) *or* `python-uv` (to install through `uv`)
+- Python 3.10+
+- For installation: `python3-pip` (to install through `pip`) *or* `uv`
 
 But only basic features will work (only CLI interface and no tracker). Everything else is optional.
 
@@ -128,7 +128,7 @@ Or download the source code and install:
 $ git clone --recursive https://github.com/FichteFoll/trackma.git
 $ cd trackma
 $ uv build
-$ pip3 install dist/trackma-0.8.5-py3-none-any.whl
+$ pip3 install dist/trackma-*-py3-none-any.whl
 ```
 
 ### Extras (User Interfaces)
