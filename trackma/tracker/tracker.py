@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import os
+import sys
 import threading
 import time
 from collections.abc import Callable
@@ -132,8 +133,7 @@ class TrackerBase:
 
     def _emit_signal(self, signal, *args):
         try:
-            callback = self.signals[signal]
-            if callback is not None:
+            if callback := self.signals[signal]:
                 callback(*args)
         except KeyError:
             raise Exception("Call to undefined signal.")
@@ -268,8 +268,12 @@ class TrackerBase:
                     break
 
         # Invoke the parser to extract show title and episode.
-        aie = self.parser_class(self.msg, filename)
-        (show_title, show_ep) = (aie.getName(), aie.getEpisode())
+        try:
+            aie = self.parser_class(self.msg, filename)
+            (show_title, show_ep) = (aie.getName(), aie.getEpisode())
+        except Exception:
+            self.msg.exception('Failed to parse filename', sys.exc_info())
+            return TrackerResolution.UNRECOGNIZED()
         if not show_title:
             # Format not recognized
             return TrackerResolution.UNRECOGNIZED()

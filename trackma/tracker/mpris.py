@@ -191,7 +191,7 @@ class MprisDbusWatcher:
                 self.msg.exception("Error in dbus watchers; cleaning up", sys.exc_info())
                 for task in tasks:
                     task.cancel()
-                await asyncio.gather(*tasks)
+                await asyncio.gather(*tasks, return_exceptions=True)
 
     async def name_owner_watcher(self, router):
         # Select name change signals for the well-known mpris service name.
