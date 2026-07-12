@@ -841,13 +841,18 @@ class Trackma_cmd(command.Cmd):
             # If we're in a prompt and receive a message
             # (often from the tracker) we need to clear the line
             # first, show the message, then re-show the prompt.
-            buf = readline.get_line_buffer()
+            #
+            # Note that sometimes a trailing newline is included in the return value
+            # or an outdated and longer version.
+            # This is usually of no issue, though.
+            raw_buf = readline.get_line_buffer()
+            buf = raw_buf.rstrip('\n')
             self.stdout.write('\r' + ' '*(len(self.prompt)+len(buf)) + '\r')
 
             print(out)
-
-            self.stdout.write(self.prompt + buf)
-            self.stdout.flush()
+            # This sometimes triggers a bell.
+            # Not ideal, but it works since we cannot rely on `bug`.
+            readline.redisplay()
         else:
             print(out)
 
