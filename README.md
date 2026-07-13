@@ -1,6 +1,16 @@
 Trackma
 =======
 
+> [!NOTE]
+>
+> This is a fork of https://github.com/z411/trackma.
+> The fork was created due to a recently added AI/LLM usage policy
+> and does not ahere to it,
+> notably by containing partially machine-generated code.
+>
+> Changes may or may not be upstreamd in the future
+> if the usage policy changes.
+
 Trackma aims to be a lightweight and simple but feature-rich program for Unix based systems
 for fetching, updating and using data from personal lists hosted in several media tracking websites.
 
