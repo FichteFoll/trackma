@@ -119,13 +119,13 @@ $ pip3 install Trackma
 You can also install the git (probably unstable, but newer) version like this:
 
 ```sh
-$ pip3 install -U git+https://github.com/z411/trackma.git
+$ pip3 install -U git+https://github.com/FichteFoll/trackma.git
 ```
 
 Or download the source code and install:
 
 ```sh
-$ git clone --recursive https://github.com/z411/trackma.git
+$ git clone --recursive https://github.com/FichteFoll/trackma.git
 $ cd trackma
 $ uv build
 $ pip3 install dist/trackma-0.8.5-py3-none-any.whl
@@ -203,7 +203,7 @@ Alternatively, the GTK and Qt interfaces provide a visual Settings panel.
 Development
 -----------
 
-The code is hosted as a git repository on [GitHub](https://github.com/z411/trackma).
+The code is hosted as a git repository on [GitHub](https://github.com/FichteFoll/trackma).
 
 Clone the repo and create the virtual environment using `uv`:
 
@@ -217,7 +217,7 @@ Use the above commands from the [uv](#uv) section
 for how to run your desired interface.
 
 If you encounter any problems or have anything to suggest, please don't
-hesitate to submit an issue in the GitHub [issue tracker](https://github.com/z411/trackma/issues).
+hesitate to submit an issue in the GitHub [issue tracker](https://github.com/z411/trackma/issues) (upstream).
 
 License
 -------
