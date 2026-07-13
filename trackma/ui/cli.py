@@ -25,17 +25,12 @@ from operator import itemgetter  # Used for sorting list
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.completion import Completer, Completion, FuzzyCompleter, WordCompleter
+from prompt_toolkit.shortcuts import CompleteStyle
 from prompt_toolkit.formatted_text import ANSI, HTML
 from prompt_toolkit.document import Document
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.utils import get_cwidth
-from prompt_toolkit.shortcuts import (
-    button_dialog,
-    input_dialog,
-    print_formatted_text,
-    radiolist_dialog,
-    yes_no_dialog,
-)
+from prompt_toolkit.shortcuts import print_formatted_text
 from prompt_toolkit.patch_stdout import patch_stdout
 
 from trackma import messenger
@@ -72,6 +67,55 @@ def _truncate_display(text, max_width):
         result += char
         width += char_width
     return result
+
+
+def _prompt_input(message, *, password=False, default=''):
+    try:
+        return PromptSession().prompt(f'{message} ', default=default, is_password=password)
+    except EOFError:
+        return None
+
+
+def _prompt_yes_no(message, *, title='Trackma'):
+    try:
+        answer = PromptSession().prompt(HTML(f'<b>{title}</b> {message} [y/N] '))
+    except EOFError:
+        return False
+
+    return answer.strip().lower() in {'y', 'yes'}
+
+
+def _prompt_choice(title, text, values):
+    if not values:
+        return None
+
+    choices = []
+    lookup = {}
+    for value, label in values:
+        choice = f'{value}: {label}'
+        choices.append(choice)
+        lookup[choice] = value
+
+    session = PromptSession()
+    try:
+        selected = session.prompt(
+            HTML(f'<b>{title}</b> {text} '),
+            completer=FuzzyCompleter(WordCompleter(choices, ignore_case=True, sentence=True)),
+            complete_style=CompleteStyle.COLUMN,
+            complete_while_typing=True,
+        )
+    except EOFError:
+        return None
+
+    selected = selected.strip()
+    if selected in lookup:
+        return lookup[selected]
+
+    for value, _label in values:
+        if selected == str(value) or selected.startswith(f'{value}:'):
+            return value
+
+    return None
 
 
 class TrackmaCompleter(Completer):
@@ -232,19 +276,6 @@ class Trackma_cmd:
         names.append('help')
         return sorted(set(names))
 
-    def _prompt_input(self, message, *, password=False, default=''):
-        dialog = input_dialog(title='Trackma', text=message, password=password, default=default)
-        return dialog.run()
-
-    def _prompt_yes_no(self, message, *, title='Trackma'):
-        return yes_no_dialog(title=title, text=message).run()
-
-    def _prompt_choice(self, title, text, values):
-        return radiolist_dialog(title=title, text=text, values=values).run()
-
-    def _prompt_action(self, title, text, buttons):
-        return button_dialog(title=title, text=text, buttons=buttons).run()
-
     def _command_prompt(self):
         return self.prompt if self.prompt else HTML('<ansigreen>trackma</ansigreen> >> ')
 
@@ -263,11 +294,11 @@ class Trackma_cmd:
             return self.engine.get_show_info(title=title)
 
     def _ask_update(self, show, episode):
-        if self._prompt_yes_no(f"Should I update {show['title']} to episode {episode}?", title='Update show'):
+        if _prompt_yes_no(f"Should I update {show['title']} to episode {episode}?", title='Update show'):
             self.engine.set_episode(show['id'], episode)
 
     def _ask_add(self, show, episode):
-        if self._prompt_yes_no(f"Should I search for the show {show['title']}?", title='Add show'):
+        if _prompt_yes_no(f"Should I search for the show {show['title']}?", title='Add show'):
             self.do_add([show['title']])
 
     def start(self):
@@ -581,7 +612,7 @@ class Trackma_cmd:
 
         for i, entry in enumerate(entries, start=1):
             print("%d: (%s) %s" % (i, entry['type'], entry['title']))
-        choice = self._prompt_choice(
+        choice = _prompt_choice(
             'Add show',
             'Choose show to add:',
             [(entry['id'], f"({entry['type']}) {entry['title']}") for entry in entries],
@@ -612,7 +643,7 @@ class Trackma_cmd:
         try:
             show = self._get_show(args[0])
 
-            if self._prompt_yes_no(f"Delete {show['title']}?", title='Delete show'):
+            if _prompt_yes_no(f"Delete {show['title']}?", title='Delete show'):
                 self.engine.delete_show(show)
         except utils.TrackmaError as e:
             self.display_error(e)
@@ -830,7 +861,7 @@ class Trackma_cmd:
         """
         try:
             if self.engine.get_queue():
-                if self._prompt_yes_no('There are unqueued changes. Overwrite local list?', title='Retrieve list'):
+                if _prompt_yes_no('There are unqueued changes. Overwrite local list?', title='Retrieve list'):
                     self.engine.list_download()
             else:
                 self.engine.list_download()
@@ -1073,7 +1104,7 @@ class Trackma_accounts(AccountManager):
         print(auth_url)
         print()
 
-        return self._prompt_input('PIN:'), extra
+        return _prompt_input('PIN:'), extra
 
     def select_account(self, bypass):
         if not bypass and self.get_default():
@@ -1084,7 +1115,7 @@ class Trackma_accounts(AccountManager):
         while True:
             print('--- Accounts ---')
             self.list_accounts()
-            key = self._prompt_input(
+            key = _prompt_input(
                 "Input account number ([r#]emember, [a]dd, [e]dit, [c]ancel, [d]elete, [q]uit):")
             if key is None:
                 continue
@@ -1093,7 +1124,7 @@ class Trackma_accounts(AccountManager):
                 available_libs = ', '.join(sorted(utils.available_libs.keys()))
 
                 print("--- Add account ---")
-                api = self._prompt_input('Enter API (%s):' % available_libs)
+                api = _prompt_input('Enter API (%s):' % available_libs)
                 extra = {}
                 try:
                     selected_api = utils.available_libs[api]
@@ -1102,10 +1133,10 @@ class Trackma_accounts(AccountManager):
                     continue
 
                 if selected_api[2] == utils.Login.PASSWD:
-                    username = self._prompt_input('Enter username:')
-                    password = self._prompt_input('Enter password (no echo):', password=True)
+                    username = _prompt_input('Enter username:')
+                    password = _prompt_input('Enter password (no echo):', password=True)
                 elif selected_api[2] in [utils.Login.OAUTH, utils.Login.OAUTH_PKCE]:
-                    username = self._prompt_input('Enter account name:')
+                    username = _prompt_input('Enter account name:')
                     password, extra = self._request_oauth_code(selected_api, extra)
 
                 try:
@@ -1126,7 +1157,7 @@ class Trackma_accounts(AccountManager):
                 extra = account.get('extra', {})
 
                 if selected_api[2] == utils.Login.PASSWD:
-                    password = self._prompt_input(
+                    password = _prompt_input(
                         'Enter new password (leave blank to keep current):',
                         password=True,
                     )
@@ -1146,14 +1177,17 @@ class Trackma_accounts(AccountManager):
                 if account_id is None:
                     continue
                 account = self.get_account(account_id)
-                if button_dialog(
-                    title='Delete account',
-                    text=HTML(
-                        '<ansired>Are you sure you want to delete account '
-                        f"{account_id} ({account['username']})?</ansired>"
-                    ),
-                    buttons=[('Delete', True), ('Cancel', False)],
-                ).run():
+                try:
+                    confirm = PromptSession().prompt(
+                        HTML(
+                            '<ansired>Delete account '
+                            f"{account_id} ({account['username']})? [y/N]</ansired> "
+                        )
+                    )
+                except EOFError:
+                    confirm = ''
+
+                if confirm.strip().lower() in {'y', 'yes'}:
                     self.delete_account(account_id)
                     print('Account %d deleted.' % account_id)
             elif key.lower() == 'q':
@@ -1186,7 +1220,7 @@ class Trackma_accounts(AccountManager):
             print('No accounts.')
             return None
 
-        selected = self._prompt_choice('Trackma', text, accounts)
+        selected = _prompt_choice('Trackma', text, accounts)
         return selected
 
     def list_accounts(self):
