@@ -193,8 +193,32 @@ class TrackmaCompleter(Completer):
 
 class Trackma_cmd:
     """
-    Main program, inherits from the useful Cmd class
-    for interactive console
+    Interactive CLI command runner.
+
+    This class owns the prompt, account selection, engine lifecycle,
+    command parsing, argument validation, and tab completion.
+
+    Commands are dispatched by name from `execute_line()`
+    and parsed via shlex, i.e. they use shell syntax.
+    The first token is treated as the command name,
+    and the dispatcher looks for a matching `do_<name>()` method.
+    Aliases are implemented by adding a `do_<alias>()` method that
+    delegates to the real command handler.
+
+    `help` is generated from command docstrings.
+    A command only appears in help if its `do_*` method has a docstring.
+    The parser understands these metadata tags:
+    `:name` for a display name or aliases,
+    `:param` for required arguments,
+    `:optparam` for optional arguments,
+    `:usage` for a short usage string,
+    and `:example` for example invocations.
+
+    To add a new command,
+    implement `do_<name>(self, args)`,
+    add an entry to `needed_args` when the command should enforce
+    a specific argument count,
+    and document it with the tags above so it shows up in `help`.
     """
     engine = None
     filter_num = 1
