@@ -90,8 +90,8 @@ class TrackmaCompleter(Completer):
         if not self.cli.engine:
             return []
         try:
-            showlist = self.cli.engine.data_handler.get()
-            return [v['title'] for v in showlist.values()]
+            showlist = self.cli.engine.filter_list(self.cli.filter_num)
+            return [show['title'] for show in showlist]
         except utils.TrackmaError:
             return []
 
