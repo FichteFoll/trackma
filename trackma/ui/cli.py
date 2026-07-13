@@ -27,7 +27,7 @@ from prompt_toolkit import PromptSession
 from prompt_toolkit.completion import Completer, Completion, FuzzyCompleter, WordCompleter
 from prompt_toolkit.formatted_text import ANSI, HTML
 from prompt_toolkit.document import Document
-from prompt_toolkit.history import InMemoryHistory
+from prompt_toolkit.history import FileHistory
 from prompt_toolkit.utils import get_cwidth
 from prompt_toolkit.shortcuts import (
     button_dialog,
@@ -186,7 +186,9 @@ class Trackma_cmd:
         self.interactive = interactive
         self.debug = debug
         self.prompt = ''
-        self.session = PromptSession(history=InMemoryHistory())
+        self.history_file = utils.to_cache_path('cli_history.txt')
+        utils.make_dir(utils.to_cache_path())
+        self.session = PromptSession(history=FileHistory(self.history_file))
         self.completer = FuzzyCompleter(TrackmaCompleter(self))
         self.session.completer = self.completer
         self.show_title_commands = {
