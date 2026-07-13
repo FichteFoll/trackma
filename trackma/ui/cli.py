@@ -240,16 +240,16 @@ class Trackma_cmd:
         }
 
         self.accountman = Trackma_accounts()
+        self.account = None
         if account_num:
             try:
                 self.account = self.accountman.get_account(account_num)
             except KeyError:
-                print("Account {} doesn't exist.".format(account_num))
-                self.account = self.accountman.select_account(True)
+                print(f"Account {account_num} doesn't exist.")
             except ValueError:
-                print("Account {} must be numeric.".format(account_num))
-                self.account = self.accountman.select_account(True)
-        else:
+                print(f"Account {account_num} must be numeric.")
+
+        while self.account is None:
             self.account = self.accountman.select_account(False)
 
     def forget_account(self):
@@ -477,7 +477,11 @@ class Trackma_cmd:
         Switch to a different account.
         """
 
-        self.account = self.accountman.select_account(True)
+        account = self.accountman.select_account(True)
+        if account is None:
+            return
+
+        self.account = account
         self.engine.reload(account=self.account)
 
         # Start with default filter selected
@@ -1119,6 +1123,9 @@ class Trackma_accounts(AccountManager):
                 "Input account number ([r#]emember, [a]dd, [e]dit, [c]ancel, [d]elete, [q]uit):")
             if key is None:
                 continue
+
+            if key.lower() in {'c', 'cancel'}:
+                return None
 
             if key.lower() == 'a':
                 available_libs = ', '.join(sorted(utils.available_libs.keys()))
