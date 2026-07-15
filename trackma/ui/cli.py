@@ -106,13 +106,23 @@ class CommandSpec:
             if default is inspect._empty:
                 parts.append(f'<{param_name}>')
             else:
-                parts.append(f'[{param_name}]')
+                parts.append(f'[<{param_name}>]')
+        return ' '.join(parts)
+
+    @property
+    def args_usage(self):
+        parts = []
+        for param_name, default in zip(self.param_names, self.defaults):
+            if default is inspect._empty:
+                parts.append(f'<{param_name}>')
+            else:
+                parts.append(f'[<{param_name}>]')
         return ' '.join(parts)
 
     @property
     def display_names(self):
         if self.aliases:
-            return f"{self.name} ({', '.join(self.aliases)})"
+            return f"{self.name} | {' | '.join(self.aliases)}"
         return self.name
 
 
@@ -641,11 +651,13 @@ class Trackma_cmd:
         specs = list(self._command_specs())
         CMD_LENGTH = max((_display_width(spec.display_names) for spec in specs), default=0)
         ARG_LENGTH = max(
-            (_display_width('<' + ','.join(spec.param_names) + '>') if spec.param_names else 0 for spec in specs),
+            (_display_width(spec.args_usage) if spec.args_usage else 0 for spec in specs),
             default=0,
         )
+        DESC_LENGTH = max((_display_width(spec.summary or '') for spec in specs), default=0)
         CMD_LENGTH = max(CMD_LENGTH, _display_width('command'))
         ARG_LENGTH = max(ARG_LENGTH, _display_width('args'))
+        DESC_LENGTH = max(DESC_LENGTH, _display_width('description'))
 
         (height, width) = utils.get_terminal_size()
         prev_width = CMD_LENGTH + ARG_LENGTH + 3
@@ -659,10 +671,10 @@ class Trackma_cmd:
             'command', CMD_LENGTH,
             'args', ARG_LENGTH,
             'description'))
-        print(" " + "-"*(min(prev_width+81, width-3)))
+        print(" " + "-"*(min(prev_width + DESC_LENGTH, width - 3)))
 
         for spec in specs:
-            args = '<' + ','.join(spec.param_names) + '>' if spec.param_names else ''
+            args = spec.args_usage
             line = " {0:>{1}} {2:{3}} {4}".format(
                 spec.display_names, CMD_LENGTH,
                 args, ARG_LENGTH,
