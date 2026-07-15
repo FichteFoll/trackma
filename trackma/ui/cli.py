@@ -638,8 +638,14 @@ class Trackma_cmd:
             print()
             return
 
-        CMD_LENGTH = 18
-        ARG_LENGTH = 24
+        specs = list(self._command_specs())
+        CMD_LENGTH = max((_display_width(spec.display_names) for spec in specs), default=0)
+        ARG_LENGTH = max(
+            (_display_width('<' + ','.join(spec.param_names) + '>') if spec.param_names else 0 for spec in specs),
+            default=0,
+        )
+        CMD_LENGTH = max(CMD_LENGTH, _display_width('command'))
+        ARG_LENGTH = max(ARG_LENGTH, _display_width('args'))
 
         (height, width) = utils.get_terminal_size()
         prev_width = CMD_LENGTH + ARG_LENGTH + 3
@@ -655,7 +661,7 @@ class Trackma_cmd:
             'description'))
         print(" " + "-"*(min(prev_width+81, width-3)))
 
-        for spec in self._command_specs():
+        for spec in specs:
             args = '<' + ','.join(spec.param_names) + '>' if spec.param_names else ''
             line = " {0:>{1}} {2:{3}} {4}".format(
                 spec.display_names, CMD_LENGTH,
