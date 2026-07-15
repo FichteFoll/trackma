@@ -15,13 +15,17 @@
 #
 
 import argparse
+import inspect
 import os
 import re
 import shlex
 import subprocess
 import sys
 import textwrap
+from dataclasses import dataclass
+from decimal import Decimal
 from operator import itemgetter  # Used for sorting list
+from typing import Any, get_args, get_origin
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.completion import Completer, Completion, FuzzyCompleter, WordCompleter
@@ -48,6 +52,80 @@ _COLOR_FATAL = '\033[1;31m'
 
 _COLOR_AIRING = '\033[0;34m'
 _COLOR_BEHIND = '\033[0;31m'
+
+
+class CommandError(Exception):
+    pass
+
+
+# These classes are used for type hints in command definition.
+class Show:
+    pass
+
+
+class StatusName:
+    pass
+
+
+class MediaType:
+    pass
+
+
+class SortKey:
+    pass
+
+
+class EpisodeNumber:
+    pass
+
+
+class Score:
+    pass
+
+
+@dataclass(frozen=True)
+class CommandSpec:
+    name: str
+    aliases: tuple[str, ...]
+    summary: str
+    help_text: str
+    func: Any
+    signature: inspect.Signature
+    param_names: tuple[str, ...]
+    param_types: tuple[Any, ...]
+    defaults: tuple[Any, ...]
+
+    @property
+    def required(self):
+        return sum(default is inspect._empty for default in self.defaults)
+
+    @property
+    def usage(self):
+        parts = [self.name]
+        for param_name, default in zip(self.param_names, self.defaults):
+            if default is inspect._empty:
+                parts.append(f'<{param_name}>')
+            else:
+                parts.append(f'[{param_name}]')
+        return ' '.join(parts)
+
+    @property
+    def display_names(self):
+        if self.aliases:
+            return f"{self.name} ({', '.join(self.aliases)})"
+        return self.name
+
+
+def command(*, aliases=(), summary='', help_text=''):
+    def decorator(func):
+        func.__trackma_command__ = {
+            'aliases': tuple(aliases),
+            'summary': summary,
+            'help_text': help_text,
+        }
+        return func
+
+    return decorator
 
 
 def _display_width(text):
@@ -123,12 +201,7 @@ class TrackmaCompleter(Completer):
         self.cli = cli
 
     def _command_names(self):
-        names = []
-        for name in dir(self.cli):
-            if name.startswith('do_') and not name.startswith('do__'):
-                names.append(name[3:])
-        names.extend(['help'])
-        return sorted(set(names))
+        return sorted(self.cli._command_registry())
 
     def _show_titles(self):
         if not self.cli.engine:
@@ -151,6 +224,7 @@ class TrackmaCompleter(Completer):
 
         current = document.get_word_before_cursor()
         command_names = self._command_names()
+        registry = self.cli._command_registry()
 
         if not parts:
             for name in command_names:
@@ -179,9 +253,17 @@ class TrackmaCompleter(Completer):
                     yield Completion(candidate, start_position=-len(current))
             return
 
-        if cmd in self.cli.show_title_commands and len(parts) <= 2:
-            prefix = current
-            title_doc = Document(text=prefix, cursor_position=len(prefix))
+        spec = registry.get(cmd)
+        if not spec:
+            return
+
+        param_index = len(parts) - 2
+        if param_index < 0:
+            return
+
+        annotation = spec.param_types[param_index] if param_index < len(spec.param_types) else str
+        if annotation is Show:
+            title_doc = Document(text=current, cursor_position=len(current))
             title_completer = FuzzyCompleter(WordCompleter(self._show_titles(), ignore_case=True))
             for completion in title_completer.get_completions(title_doc, complete_event):
                 yield Completion(
@@ -189,58 +271,32 @@ class TrackmaCompleter(Completer):
                     start_position=completion.start_position,
                     display=completion.display_text,
                 )
+        elif annotation is StatusName:
+            if not self.cli.engine:
+                return
+            for value in self.cli.engine.mediainfo['statuses_dict'].values():
+                candidate = value.lower().replace(' ', '')
+                if candidate.startswith(current.lower()):
+                    yield Completion(candidate, start_position=-len(current))
+        elif annotation is MediaType:
+            if not self.cli.engine:
+                return
+            for value in self.cli.engine.api_info['supported_mediatypes']:
+                if value.startswith(current):
+                    yield Completion(value, start_position=-len(current))
+        elif annotation is SortKey:
+            for value in ('id', 'title', 'my_progress', 'total', 'my_score'):
+                if value.startswith(current):
+                    yield Completion(value, start_position=-len(current))
 
 
 class Trackma_cmd:
-    """
-    Interactive CLI command runner.
-
-    This class owns the prompt, account selection, engine lifecycle,
-    command parsing, argument validation, and tab completion.
-
-    Commands are dispatched by name from `execute_line()`
-    and parsed via shlex, i.e. they use shell syntax.
-    The first token is treated as the command name,
-    and the dispatcher looks for a matching `do_<name>()` method.
-    Aliases are implemented by adding a `do_<alias>()` method that
-    delegates to the real command handler.
-
-    `help` is generated from command docstrings.
-    A command only appears in help if its `do_*` method has a docstring.
-    The parser understands these metadata tags:
-    `:name` for a display name or aliases,
-    `:param` for required arguments,
-    `:optparam` for optional arguments,
-    `:usage` for a short usage string,
-    and `:example` for example invocations.
-
-    To add a new command,
-    implement `do_<name>(self, args)`,
-    add an entry to `needed_args` when the command should enforce
-    a specific argument count,
-    and document it with the tags above so it shows up in `help`.
-    """
     engine = None
     filter_num = 1
     sort = 'title'
     sortedlist = []
-    needed_args = {
-        'altname':      (1, 2),
-        'filter':       (0, 1),
-        'sort':         1,
-        'mediatype':    (0, 1),
-        'info':         1,
-        'search':       1,
-        'add':          1,
-        'del':          1,
-        'delete':       1,
-        'play':         (1, 2),
-        'openfolder':   1,
-        'rescan':       (0, 1),
-        'update':       (1, 2),
-        'score':        2,
-        'status':       2,
-    }
+    _command_registry_cache = None
+    _command_specs_cache = None
 
     def __init__(self, account_num=None, debug=False, interactive=True):
         if interactive:
@@ -262,9 +318,6 @@ class Trackma_cmd:
             completer=self.completer,
             complete_style=CompleteStyle.COLUMN,
         )
-        self.show_title_commands = {
-            'info', 'altname', 'update', 'play', 'score', 'status', 'delete', 'del', 'openfolder'
-        }
 
         self.accountman = Trackma_accounts()
         self.account = None
@@ -312,6 +365,8 @@ class Trackma_cmd:
         self.sortedlist = list(enumerate(sortedlist, 1))
 
     def _get_show(self, title):
+        if isinstance(title, dict):
+            return title
         # Attempt parsing list index
         # otherwise use title
         try:
@@ -326,7 +381,7 @@ class Trackma_cmd:
 
     def _ask_add(self, show, episode):
         if _prompt_yes_no(f"Should I search for the show {show['title']}?", title='Add show'):
-            self.do_add([show['title']])
+            self.do_add(show['title'])
 
     def start(self):
         """
@@ -361,7 +416,7 @@ class Trackma_cmd:
             print()
             print("Ready. Type 'help' for a list of commands.")
             print("Press tab for autocompletion and up/down for command history.")
-            self.do_filter(None)  # Show available filters
+            self.do_filter()  # Show available filters
             print()
         else:
             # We set the message handler only after initializing
@@ -379,7 +434,7 @@ class Trackma_cmd:
                     line = self.session.prompt(self._command_prompt())
                 except EOFError:
                     print()
-                    self.do_quit([])
+                    self.do_quit()
                 except KeyboardInterrupt:
                     if self.session.default_buffer.text:
                         continue
@@ -397,20 +452,142 @@ class Trackma_cmd:
 
         cmd, args = parts[0], parts[1:]
         if cmd == 'help':
-            return self.do_help(args[0] if args else '')
+            return self.do_help(args[0] if args else None)
 
-        needed = self.needed_args.get(cmd, 0)
-        if isinstance(needed, int):
-            needed = (needed, needed)
-        if not (needed[0] <= len(args) <= needed[1]):
-            print("Incorrect number of arguments. See `help %s`" % cmd)
-            return None
-
-        func = getattr(self, 'do_' + cmd, None)
-        if func is None:
+        spec = self._command_registry().get(cmd)
+        if spec is None:
             print(f'Unknown command: {cmd}')
             return None
-        return func(args)
+
+        try:
+            return self._execute_spec(spec, args)
+        except CommandError as e:
+            print(e)
+
+    def _command_registry(self):
+        cls = self.__class__
+        registry = getattr(cls, '_command_registry_cache', None)
+        if registry is not None:
+            return registry
+
+        registry = {}
+        canonical = []
+        for name, func in vars(cls).items():
+            meta = getattr(func, '__trackma_command__', None)
+            if meta is None:
+                continue
+
+            signature = inspect.signature(func)
+            params = [param for param in signature.parameters.values() if param.name != 'self']
+            spec = CommandSpec(
+                name=name[3:],
+                aliases=meta['aliases'],
+                summary=meta['summary'],
+                help_text=meta['help_text'],
+                func=func,
+                signature=signature,
+                param_names=tuple(param.name for param in params),
+                param_types=tuple(param.annotation if param.annotation is not inspect._empty else str for param in params),
+                defaults=tuple(param.default for param in params),
+            )
+            canonical.append(spec)
+            registry[spec.name] = spec
+            for alias in spec.aliases:
+                registry[alias] = spec
+
+        cls._command_specs_cache = sorted(canonical, key=lambda spec: spec.name)
+        cls._command_registry_cache = registry
+        return registry
+
+    def _command_specs(self):
+        self._command_registry()
+        return self.__class__._command_specs_cache
+
+    def _execute_spec(self, spec, args):
+        args = self._expand_shortcuts(spec, list(args))
+        if not (spec.required <= len(args) <= len(spec.param_names)):
+            raise CommandError(f"Incorrect number of arguments. See `help {spec.name}`")
+
+        resolved = []
+        for index, raw_value in enumerate(args):
+            resolved.append(self._resolve_argument(spec.param_types[index], raw_value, spec.name, index))
+
+        for index in range(len(args), len(spec.param_names)):
+            default = spec.defaults[index]
+            if default is inspect._empty:
+                raise CommandError(f"Incorrect number of arguments. See `help {spec.name}`")
+            resolved.append(default)
+
+        return spec.func(self, *resolved)
+
+    def _expand_shortcuts(self, spec, args):
+        if spec.name not in {'play', 'update'}:
+            return args
+        if not args:
+            return args
+        first = args[0]
+        if not isinstance(first, str) or not first.startswith('file:'):
+            return args
+
+        show, episode = self.engine.get_show_info(filename=first[5:])
+        expanded = [show]
+        if args[1:]:
+            expanded.extend(args[1:])
+        elif episode is not None:
+            expanded.append(episode)
+        return expanded
+
+    def _resolve_argument(self, annotation, value, command, index):
+        origin = get_origin(annotation)
+        if origin is None and annotation is not inspect._empty:
+            return self._resolve_typed_argument(annotation, value, command, index)
+
+        if origin is not None:
+            candidates = [candidate for candidate in get_args(annotation) if candidate is not type(None)]
+            if len(candidates) == 1:
+                return self._resolve_typed_argument(candidates[0], value, command, index)
+
+        return value
+
+    def _resolve_typed_argument(self, annotation, value, command, index):
+        if annotation is str:
+            return value
+        if annotation is int:
+            try:
+                return int(value)
+            except ValueError:
+                raise CommandError(f"Invalid value for {command}.")
+        if annotation is Show:
+            try:
+                return self._get_show(value)
+            except utils.TrackmaError as e:
+                raise CommandError(str(e))
+        if annotation is StatusName:
+            try:
+                return self._guess_status(str(value).lower())
+            except KeyError:
+                raise CommandError('Invalid filter.')
+        if annotation is MediaType:
+            if value not in self.engine.api_info['supported_mediatypes']:
+                raise CommandError('Invalid mediatype.')
+            return value
+        if annotation is SortKey:
+            sorts = ('id', 'title', 'my_progress', 'total', 'my_score')
+            if value not in sorts:
+                raise CommandError('Invalid sort.')
+            return value
+        if annotation is EpisodeNumber:
+            try:
+                return int(value)
+            except ValueError:
+                raise CommandError('Episode must be numeric.')
+        if annotation is Score:
+            try:
+                score = Decimal(str(value))
+            except Exception:
+                raise CommandError('Invalid score.')
+            return int(score) if score == score.to_integral_value() else float(score)
+        return value
 
     def _parse_command_line(self, line):
         try:
@@ -418,7 +595,8 @@ class Trackma_cmd:
         except ValueError:
             return []
 
-    def do_about(self, args):
+    @command(summary='Show program information')
+    def do_about(self):
         print("Trackma {}  by z411 (z411@omaera.org)".format(utils.VERSION))
         print("Trackma is an open source client for media tracking websites.")
         print("https://github.com/z411/trackma")
@@ -433,73 +611,64 @@ class Trackma_cmd:
         print("For other available interfaces please see the README file.")
         print()
 
-    def do_help(self, arg):
+    @command(summary='Show help')
+    def do_help(self, arg=None):
         if arg:
-            try:
-                doc = getattr(self, 'do_' + arg).__doc__
-                if doc:
-                    (name, args, expl, usage, examples) = self._parse_doc(arg, doc)
+            spec = self._command_registry().get(arg)
+            if not spec:
+                print('No help available.')
+                return
 
-                    print()
-                    print(name)
-                    for line in expl:
-                        print("  {}".format(line))
-                    if args:
-                        print("\n  Arguments:")
-                        for arg in args:
-                            if arg[2]:
-                                print("    {}: {}".format(arg[0], arg[1]))
-                            else:
-                                print("    {} (optional): {}".format(
-                                    arg[0], arg[1]))
-                    if usage:
-                        print("\n  Usage: " + usage)
-                    for example in examples:
-                        print("  Example: " + example)
-                    print()
-                    return
-            except AttributeError:
-                pass
-
-            print("No help available.")
+            print()
+            print(spec.name)
+            if spec.aliases:
+                print('  Aliases: %s' % ', '.join(spec.aliases))
+            if spec.summary:
+                print('  %s' % spec.summary)
+            if spec.help_text:
+                print('')
+                for line in spec.help_text.splitlines():
+                    print('  %s' % line)
+            if spec.param_names:
+                print('\n  Arguments:')
+                for name, annotation, default in zip(spec.param_names, spec.param_types, spec.defaults):
+                    suffix = ' (optional)' if default is not inspect._empty else ''
+                    print(f'    {name}{suffix}: {self._type_label(annotation)}')
+            print('\n  Usage: ' + spec.usage)
+            print()
             return
-        else:
-            CMD_LENGTH = 11
-            ARG_LENGTH = 13
 
-            (height, width) = utils.get_terminal_size()
-            prev_width = CMD_LENGTH + ARG_LENGTH + 3
+        CMD_LENGTH = 18
+        ARG_LENGTH = 24
 
-            tw = textwrap.TextWrapper()
-            tw.width = width - 2
-            tw.subsequent_indent = ' ' * prev_width
+        (height, width) = utils.get_terminal_size()
+        prev_width = CMD_LENGTH + ARG_LENGTH + 3
 
-            print()
-            print(" {0:>{1}} {2:{3}} {4}".format(
-                'command', CMD_LENGTH,
-                'args', ARG_LENGTH,
-                'description'))
-            print(" " + "-"*(min(prev_width+81, width-3)))
+        tw = textwrap.TextWrapper()
+        tw.width = width - 2
+        tw.subsequent_indent = ' ' * prev_width
 
-            names = self._command_names()
-            for name in names:
-                doc = getattr(self, 'do_' + name, None)
-                if not doc or not doc.__doc__:
-                    continue
+        print()
+        print(" {0:>{1}} {2:{3}} {4}".format(
+            'command', CMD_LENGTH,
+            'args', ARG_LENGTH,
+            'description'))
+        print(" " + "-"*(min(prev_width+81, width-3)))
 
-                (cmd_name, args, expl, usage, examples) = self._parse_doc(name, doc.__doc__)
+        for spec in self._command_specs():
+            args = '<' + ','.join(spec.param_names) + '>' if spec.param_names else ''
+            line = " {0:>{1}} {2:{3}} {4}".format(
+                spec.display_names, CMD_LENGTH,
+                args, ARG_LENGTH,
+                spec.summary or '')
+            print(tw.fill(line))
 
-                line = " {0:>{1}} {2:{3}} {4}".format(
-                    cmd_name, CMD_LENGTH,
-                    '<' + ','.join(a[0] for a in args) + '>', ARG_LENGTH,
-                    expl[0])
-                print(tw.fill(line))
+        print()
+        print("Use `help <command>` for detailed information.")
+        print()
 
-            print()
-            print("Use `help <command>` for detailed information.")
-            print()
-
-    def do_account(self, args):
+    @command(summary='Switch account')
+    def do_account(self):
         """
         Switch to a different account.
         """
@@ -516,83 +685,44 @@ class Trackma_cmd:
         self._load_list()
         self._update_prompt()
 
-    def do_filter(self, args):
-        """
-        Changes the filtering of list by status (shows current if empty).
-
-        :optparam status Name of status to filter
-        :usage filter [filter type]
-        """
+    @command(summary='Filter by status')
+    def do_filter(self, status: StatusName | None = None):
         # Query the engine for the available statuses
         # that the user can choose
-        if args:
-            try:
-                self.filter_num = self._guess_status(args[0].lower())
-                self._load_list()
-                self._update_prompt()
-            except KeyError:
-                print("Invalid filter.")
+        if status is not None:
+            self.filter_num = status
+            self._load_list()
+            self._update_prompt()
         else:
             print("Available statuses: %s" % ', '.join(v.lower().replace(' ', '')
                                                        for v in self.engine.mediainfo['statuses_dict'].values()))
 
-    def do_sort(self, args):
-        """
-        Change of the lists
+    @command(summary='Change list sort')
+    def do_sort(self, sort_key: SortKey):
+        self.sort = sort_key
+        self._load_list()
 
-        :param type Sort type; available types: id, title, my_progress, total, my_score
-        :usage sort <sort type>
-        """
-        sorts = ('id', 'title', 'my_progress', 'total', 'my_score')
-        if args[0] in sorts:
-            self.sort = args[0]
+    @command(summary='Change mediatype')
+    def do_mediatype(self, mediatype: MediaType | None = None):
+        if mediatype is not None:
+            self.engine.reload(mediatype=mediatype)
+
+            # Start with default filter selected
+            self.filter_num = self.engine.mediainfo['statuses'][0]
             self._load_list()
-        else:
-            print("Invalid sort.")
-
-    def do_mediatype(self, args):
-        """
-        Reloads engine with different mediatype (shows current if empty).
-        Call with no arguments to see supported mediatypes.
-
-        :optparam mediatype Mediatype name
-        :usage mediatype [mediatype]
-        """
-        if args:
-            if args[0] in self.engine.api_info['supported_mediatypes']:
-                self.engine.reload(mediatype=args[0])
-
-                # Start with default filter selected
-                self.filter_num = self.engine.mediainfo['statuses'][0]
-                self._load_list()
-                self._update_prompt()
-            else:
-                print("Invalid mediatype.")
+            self._update_prompt()
         else:
             print("Supported mediatypes: %s" % ', '.join(
                 self.engine.api_info['supported_mediatypes']))
 
-    def do_ls(self, args):
-        self.do_list(args)
-
-    def do_list(self, args):
-        """
-        Lists all shows available in the local list.
-
-        :name list|ls
-        """
+    @command(aliases=('ls',), summary='List shows')
+    def do_list(self):
         # Show the list in memory
         self._make_list(self.sortedlist)
 
-    def do_info(self, args):
-        """
-        Gets detailed information about a local show.
-
-        :param show Show index or title.
-        :usage info <show index or title>
-        """
+    @command(summary='Show show details')
+    def do_info(self, show: Show):
         try:
-            show = self._get_show(args[0])
             details = self.engine.get_show_details(show)
         except utils.TrackmaError as e:
             self.display_error(e)
@@ -609,14 +739,9 @@ class Trackma_cmd:
         for line in details['extra']:
             print("%s: %s" % line)
 
-    def do_search(self, args):
-        """
-        Does a regex search on shows in the local lists, including synonyms and altname.
-
-        :param pattern Regex pattern to search for.
-        :usage search <pattern>
-        """
-        compiled_pattern = re.compile(args[0], re.I)
+    @command(summary='Search local shows')
+    def do_search(self, pattern: str):
+        compiled_pattern = re.compile(pattern, re.I)
         altnames = self.engine.altnames()
 
         def matches_show(show):
@@ -628,15 +753,10 @@ class Trackma_cmd:
         sublist = [v for v in self.sortedlist if matches_show(v[1])]
         self._make_list(sublist)
 
-    def do_add(self, args):
-        """
-        Search for a show in the remote service and add it.
-
-        :param pattern Show criteria to search.
-        :usage add <pattern>
-        """
+    @command(summary='Search and add a show')
+    def do_add(self, pattern: str):
         try:
-            entries = self.engine.search(args[0])
+            entries = self.engine.search(pattern)
         except utils.TrackmaError as e:
             self.display_error(e)
             return
@@ -660,51 +780,28 @@ class Trackma_cmd:
             except utils.TrackmaError as e:
                 self.display_error(e)
 
-    def do_del(self, args):
-        self.do_delete(args)
-
-    def do_delete(self, args):
-        """
-        Deletes a show from the local list.
-
-        :name delete|del
-        :param show Show index or title.
-        :usage delete <show index or title>
-        """
+    @command(aliases=('del',), summary='Delete a show')
+    def do_delete(self, show: Show):
         try:
-            show = self._get_show(args[0])
-
             if _prompt_yes_no(f"Delete {show['title']}?", title='Delete show'):
                 self.engine.delete_show(show)
         except utils.TrackmaError as e:
             self.display_error(e)
 
-    def do_rescan(self, args):
-        """
-        Re-scans the local library.
-
-        :optparam path Base path for the scan. Defaults to all library folders if omitted.
-        :usage rescan [path]
-        """
-        path = args[0] if args else None
+    @command(summary='Rescan library')
+    def do_rescan(self, path: str | None = None):
         self.engine.scan_library(rescan=True, path=path)
 
-    def do_random(self, args):
-        """
-        Starts the media player with a random new episode.
-        """
+    @command(summary='Play a random episode')
+    def do_random(self):
         try:
             args = self.engine.play_random()
             utils.spawn_process(args)
         except utils.TrackmaError as e:
             self.display_error(e)
 
-    def do_tracker(self, args):
-        """
-        Shows information about the tracker, if it's running.
-
-        :usage tracker
-        """
+    @command(summary='Show tracker status')
+    def do_tracker(self):
         try:
             info = self.engine.tracker_status()
             print("- Tracker status -")
@@ -737,38 +834,17 @@ class Trackma_cmd:
         except utils.TrackmaError as e:
             self.display_error(e)
 
-    def do_play(self, args):
-        """
-        Starts the media player with the specified episode number (next if unspecified).
-
-        :param show Episode index or title.
-        :optparam ep Episode number. Assume next if not specified.
-        :usage play <show index or title> [episode number]
-        """
+    @command(summary='Play an episode')
+    def do_play(self, show: Show, episode: EpisodeNumber | None = None):
         try:
-            episode = 0
-            show = self._get_show(args[0])
-
-            # If the user specified an episode, play it
-            # otherwise play the next episode not watched yet
-            if len(args) > 1:
-                episode = args[1]
-
-            args = self.engine.play_episode(show, episode)
-            utils.spawn_process(args)
+            play_args = self.engine.play_episode(show, episode or 0)
+            utils.spawn_process(play_args)
         except utils.TrackmaError as e:
             self.display_error(e)
 
-    def do_openfolder(self, args):
-        """
-        Opens the folder containing the show
-
-        :param show Show index or name.
-        :usage openfolder <show index or name>
-        """
-
+    @command(summary='Open show folder')
+    def do_openfolder(self, show: Show):
         try:
-            show = self._get_show(args[0])
             filename = self.engine.get_episode_path(show)
             with open(os.devnull, 'wb') as DEVNULL:
                 if sys.platform == 'darwin':
@@ -786,110 +862,43 @@ class Trackma_cmd:
         except utils.TrackmaError as e:
             self.display_error(e)
 
-    def do_update(self, args):
-        """
-        Updates the progress of a show to the specified episode (next if unspecified).
-
-        :param show Show index, title or filename (prepend with file:).
-        :optparam ep Episode number (numeric).
-        :usage update <show index or name> [episode number]
-        :example update Toradora! 5
-        :example update 6
-        :example update file:filename.mkv
-        """
+    @command(summary='Update show progress')
+    def do_update(self, show: Show, episode: EpisodeNumber | None = None):
         try:
-            if args[0][:5] == "file:":
-                (show, ep) = self.engine.get_show_info(filename=args[0][5:])
-            else:
-                (show, ep) = (self._get_show(args[0]), None)
-
-            if len(args) > 1:
-                self.engine.set_episode(show['id'], args[1])
-            else:
-                self.engine.set_episode(
-                    show['id'], ep or show['my_progress']+1)
-        except IndexError:
-            print("Missing arguments.")
+            self.engine.set_episode(show['id'], episode or show['my_progress']+1)
         except utils.TrackmaError as e:
             self.display_error(e)
 
-    def do_score(self, args):
-        """
-        Changes the score of a show.
-
-        :param show Show index or name.
-        :param score Score to set (numeric/decimal).
-        :usage score <show index or name> <score>
-        """
+    @command(summary='Set show score')
+    def do_score(self, show: Show, score: Score):
         try:
-            show = self._get_show(args[0])
-            self.engine.set_score(show['id'], args[1])
-        except IndexError:
-            print("Missing arguments.")
+            self.engine.set_score(show['id'], score)
         except utils.TrackmaError as e:
             self.display_error(e)
 
-    def do_status(self, args):
-        """
-        Changes the status of a show.
-        Use the command `filter` without arguments to see the available statuses.
-
-        :param show Show index or name.
-        :param status Status name. Use `filter` without args to list them.
-        :usage status <show index or name> <status name>
-        """
+    @command(summary='Set show status')
+    def do_status(self, show: Show, status: StatusName):
         try:
-            _showtitle = args[0]
-            _filter = args[1]
-        except IndexError:
-            print("Missing arguments.")
-            return
-
-        try:
-            _filter_num = self._guess_status(_filter)
-        except KeyError:
-            print("Invalid filter.")
-            return
-
-        try:
-            show = self._get_show(_showtitle)
-            self.engine.set_status(show['id'], _filter_num)
+            self.engine.set_status(show['id'], status)
         except utils.TrackmaError as e:
             self.display_error(e)
 
-    def do_altname(self, args):
-        """
-        Changes the alternative name of a show (removes if unspecified).
-        Use the command 'altname' without arguments to clear the alternative
-        name.
-
-        :param show Show index or name
-        :param alt  The alternative name. Use `altname` without alt to clear it
-        :usage altname <show index or name> <alternative name>
-        """
+    @command(summary='Set altname')
+    def do_altname(self, show: Show, alt: str = ''):
         try:
-            show = self._get_show(args[0])
-            altname = args[1] if len(args) > 1 else ''
-            self.engine.altname(show['id'], altname)
-        except IndexError:
-            print("Missing arguments")
-            return
+            self.engine.altname(show['id'], alt)
         except utils.TrackmaError as e:
             self.display_error(e)
 
-    def do_send(self, args):
-        """
-        Sends queued changes to the remote service.
-        """
+    @command(summary='Upload queued changes')
+    def do_send(self):
         try:
             self.engine.list_upload()
         except utils.TrackmaError as e:
             self.display_error(e)
 
-    def do_retrieve(self, args):
-        """
-        Retrieves the remote list overwrites the local one.
-        """
+    @command(summary='Download remote list')
+    def do_retrieve(self):
         try:
             if self.engine.get_queue():
                 if _prompt_yes_no('There are unqueued changes. Overwrite local list?', title='Retrieve list'):
@@ -900,19 +909,15 @@ class Trackma_cmd:
         except utils.TrackmaError as e:
             self.display_error(e)
 
-    def do_clearqueue(self, args):
-        """
-        Undo all changes in queue.
-        """
+    @command(summary='Clear queue')
+    def do_clearqueue(self):
         try:
             self.engine.queue_clear()
         except utils.TrackmaError as e:
             self.display_error(e)
 
-    def do_viewqueue(self, args):
-        """
-        List the queued changes.
-        """
+    @command(summary='View queue')
+    def do_viewqueue(self):
         queue = self.engine.get_queue()
         if queue:
             print("Queue:")
@@ -921,15 +926,8 @@ class Trackma_cmd:
         else:
             print("Queue is empty.")
 
-    def do_exit(self, args):
-        self.do_quit(args)
-
-    def do_quit(self, args):
-        """
-        Quits the program.
-
-        :name quit|exit
-        """
+    @command(aliases=('exit',), summary='Quit the program')
+    def do_quit(self):
         try:
             self.engine.unload()
         except utils.TrackmaError as e:
@@ -938,10 +936,6 @@ class Trackma_cmd:
         print('Bye!')
         sys.exit(0)
 
-    def do_EOF(self, args):
-        print()
-        self.do_quit(args)
-
     def parse_args(self, arg):
         if arg:
             return shlex.split(arg)
@@ -949,24 +943,14 @@ class Trackma_cmd:
         return []
 
     def execute(self, cmd, args, line):
-        try:
-            func = getattr(self, 'do_' + cmd)
-        except AttributeError:
+        spec = self._command_registry().get(cmd)
+        if spec is None:
             print(f'Unknown command: {cmd}')
             return None
-
         try:
-            needed = self.needed_args[cmd]
-        except KeyError:
-            needed = 0
-
-        if isinstance(needed, int):
-            needed = (needed, needed)
-
-        if needed[0] <= len(args) <= needed[1]:
-            return func(args)
-        else:
-            print("Incorrect number of arguments. See `help %s`" % cmd)
+            return self._execute_spec(spec, args)
+        except CommandError as e:
+            print(e)
 
     def display_error(self, e):
         print("%s%s: %s%s" % (_COLOR_ERROR, type(e).__name__, e, _COLOR_RESET))
@@ -1005,6 +989,21 @@ class Trackma_cmd:
             if string.lower() == v.lower().replace(' ', ''):
                 return k
         raise KeyError
+
+    def _type_label(self, annotation):
+        if annotation is Show:
+            return 'show index or title'
+        if annotation is StatusName:
+            return 'status name'
+        if annotation is MediaType:
+            return 'mediatype'
+        if annotation is SortKey:
+            return 'sort key'
+        if annotation is EpisodeNumber:
+            return 'episode number'
+        if annotation is Score:
+            return 'score'
+        return getattr(annotation, '__name__', str(annotation))
 
     def _parse_doc(self, cmd, doc):
         lines = doc.split('\n')
