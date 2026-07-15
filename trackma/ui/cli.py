@@ -256,9 +256,12 @@ class Trackma_cmd:
         self.prompt = ''
         self.history_file = utils.to_cache_path('cli_history.txt')
         utils.make_dir(utils.to_cache_path())
-        self.session = PromptSession(history=FileHistory(self.history_file))
         self.completer = FuzzyCompleter(TrackmaCompleter(self))
-        self.session.completer = self.completer
+        self.session = PromptSession(
+            history=FileHistory(self.history_file),
+            completer=self.completer,
+            complete_style=CompleteStyle.COLUMN,
+        )
         self.show_title_commands = {
             'info', 'altname', 'update', 'play', 'score', 'status', 'delete', 'del', 'openfolder'
         }
