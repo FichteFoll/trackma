@@ -303,7 +303,7 @@ class TrackmaCompleter(Completer):
 class Trackma_cmd:
     engine = None
     filter_num = 1
-    sort = 'title'
+    sort_key = 'title'
     sortedlist = []
     _command_registry_cache = None
     _command_specs_cache = None
@@ -330,17 +330,17 @@ class Trackma_cmd:
         )
 
         self.accountman = Trackma_accounts()
-        self.account = None
+        self.current_account = None
         if account_num:
             try:
-                self.account = self.accountman.get_account(account_num)
+                self.current_account = self.accountman.get_account(account_num)
             except KeyError:
                 print(f"Account {account_num} doesn't exist.")
             except ValueError:
                 print(f"Account {account_num} must be numeric.")
 
-        while self.account is None:
-            self.account = self.accountman.select_account(False)
+        while self.current_account is None:
+            self.current_account = self.accountman.select_account(False)
 
     def forget_account(self):
         self.accountman.set_default(None)
@@ -359,10 +359,7 @@ class Trackma_cmd:
         )
 
     def _command_names(self):
-        names = []
-        for name in dir(self):
-            if name.startswith('do_'):
-                names.append(name[3:])
+        names = [spec.name for spec in self._command_specs()]
         names.append('help')
         return sorted(set(names))
 
@@ -371,7 +368,7 @@ class Trackma_cmd:
 
     def _load_list(self, *args):
         showlist = self.engine.filter_list(self.filter_num)
-        sortedlist = sorted(showlist, key=itemgetter(self.sort))
+        sortedlist = sorted(showlist, key=itemgetter(self.sort_key))
         self.sortedlist = list(enumerate(sortedlist, 1))
 
     def _get_show(self, title):
@@ -391,7 +388,7 @@ class Trackma_cmd:
 
     def _ask_add(self, show, episode):
         if _prompt_yes_no(f"Should I search for the show {show['title']}?", title='Add show'):
-            self.do_add(show['title'])
+            self.add(show['title'])
 
     def start(self):
         """
@@ -402,7 +399,7 @@ class Trackma_cmd:
 
         if self.interactive:
             print('Initializing engine...')
-        self.engine = Engine(self.account, self.messagehandler if self.interactive else None)
+        self.engine = Engine(self.current_account, self.messagehandler if self.interactive else None)
         if not self.interactive:
             self.engine.set_config("tracker_enabled", False)
             self.engine.set_config("library_autoscan", False)
@@ -426,7 +423,7 @@ class Trackma_cmd:
             print()
             print("Ready. Type 'help' for a list of commands.")
             print("Press tab for autocompletion and up/down for command history.")
-            self.do_filter()  # Show available filters
+            self.filter()  # Show available filters
             print()
         else:
             # We set the message handler only after initializing
@@ -444,7 +441,7 @@ class Trackma_cmd:
                     line = self.session.prompt(self._command_prompt())
                 except EOFError:
                     print()
-                    self.do_quit()
+                    self.quit()
                 except KeyboardInterrupt:
                     if self.session.default_buffer.text:
                         continue
@@ -462,7 +459,7 @@ class Trackma_cmd:
 
         cmd, args = parts[0], parts[1:]
         if cmd == 'help':
-            return self.do_help(args[0] if args else None)
+            return self.help(args[0] if args else None)
 
         spec = self._command_registry().get(cmd)
         if spec is None:
@@ -490,7 +487,7 @@ class Trackma_cmd:
             signature = inspect.signature(func)
             params = [param for param in signature.parameters.values() if param.name != 'self']
             spec = CommandSpec(
-                name=name[3:],
+                name=func.__name__,
                 aliases=meta['aliases'],
                 summary=meta['summary'],
                 help_text=meta['help_text'],
@@ -606,7 +603,7 @@ class Trackma_cmd:
             return []
 
     @command(summary='Show program information')
-    def do_about(self):
+    def about(self):
         print("Trackma {}  by z411 (z411@omaera.org)".format(utils.VERSION))
         print("Trackma is an open source client for media tracking websites.")
         print("https://github.com/z411/trackma")
@@ -622,7 +619,7 @@ class Trackma_cmd:
         print()
 
     @command(summary='Show help')
-    def do_help(self, arg=None):
+    def help(self, arg=None):
         if arg:
             spec = self._command_registry().get(arg)
             if not spec:
@@ -686,7 +683,7 @@ class Trackma_cmd:
         print()
 
     @command(summary='Switch account')
-    def do_account(self):
+    def account(self):
         """
         Switch to a different account.
         """
@@ -695,8 +692,8 @@ class Trackma_cmd:
         if account is None:
             return
 
-        self.account = account
-        self.engine.reload(account=self.account)
+        self.current_account = account
+        self.engine.reload(account=self.current_account)
 
         # Start with default filter selected
         self.filter_num = self.engine.mediainfo['statuses'][0]
@@ -704,7 +701,7 @@ class Trackma_cmd:
         self._update_prompt()
 
     @command(summary='Filter by status')
-    def do_filter(self, status: StatusName | None = None):
+    def filter(self, status: StatusName | None = None):
         # Query the engine for the available statuses
         # that the user can choose
         if status is not None:
@@ -716,12 +713,12 @@ class Trackma_cmd:
                                                        for v in self.engine.mediainfo['statuses_dict'].values()))
 
     @command(summary='Change list sort')
-    def do_sort(self, sort_key: SortKey):
-        self.sort = sort_key
+    def sort(self, sort_key: SortKey):
+        self.sort_key = sort_key
         self._load_list()
 
     @command(summary='Change mediatype')
-    def do_mediatype(self, mediatype: MediaType | None = None):
+    def mediatype(self, mediatype: MediaType | None = None):
         if mediatype is not None:
             self.engine.reload(mediatype=mediatype)
 
@@ -734,12 +731,12 @@ class Trackma_cmd:
                 self.engine.api_info['supported_mediatypes']))
 
     @command(aliases=('ls',), summary='List shows')
-    def do_list(self):
+    def list(self):
         # Show the list in memory
         self._make_list(self.sortedlist)
 
     @command(summary='Show show details')
-    def do_info(self, show: Show):
+    def info(self, show: Show):
         try:
             details = self.engine.get_show_details(show)
         except utils.TrackmaError as e:
@@ -758,7 +755,7 @@ class Trackma_cmd:
             print("%s: %s" % line)
 
     @command(summary='Search local shows')
-    def do_search(self, pattern: str):
+    def search(self, pattern: str):
         compiled_pattern = re.compile(pattern, re.I)
         altnames = self.engine.altnames()
 
@@ -772,7 +769,7 @@ class Trackma_cmd:
         self._make_list(sublist)
 
     @command(summary='Search and add a show')
-    def do_add(self, pattern: str):
+    def add(self, pattern: str):
         try:
             entries = self.engine.search(pattern)
         except utils.TrackmaError as e:
@@ -799,7 +796,7 @@ class Trackma_cmd:
                 self.display_error(e)
 
     @command(aliases=('del',), summary='Delete a show')
-    def do_delete(self, show: Show):
+    def delete(self, show: Show):
         try:
             if _prompt_yes_no(f"Delete {show['title']}?", title='Delete show'):
                 self.engine.delete_show(show)
@@ -807,11 +804,11 @@ class Trackma_cmd:
             self.display_error(e)
 
     @command(summary='Rescan library')
-    def do_rescan(self, path: str | None = None):
+    def rescan(self, path: str | None = None):
         self.engine.scan_library(rescan=True, path=path)
 
     @command(summary='Play a random episode')
-    def do_random(self):
+    def random(self):
         try:
             args = self.engine.play_random()
             utils.spawn_process(args)
@@ -819,7 +816,7 @@ class Trackma_cmd:
             self.display_error(e)
 
     @command(summary='Show tracker status')
-    def do_tracker(self):
+    def tracker(self):
         try:
             info = self.engine.tracker_status()
             print("- Tracker status -")
@@ -853,7 +850,7 @@ class Trackma_cmd:
             self.display_error(e)
 
     @command(summary='Play an episode')
-    def do_play(self, show: Show, episode: EpisodeNumber | None = None):
+    def play(self, show: Show, episode: EpisodeNumber | None = None):
         try:
             play_args = self.engine.play_episode(show, episode or 0)
             utils.spawn_process(play_args)
@@ -861,7 +858,7 @@ class Trackma_cmd:
             self.display_error(e)
 
     @command(summary='Open show folder')
-    def do_openfolder(self, show: Show):
+    def openfolder(self, show: Show):
         try:
             filename = self.engine.get_episode_path(show)
             with open(os.devnull, 'wb') as DEVNULL:
@@ -881,42 +878,42 @@ class Trackma_cmd:
             self.display_error(e)
 
     @command(summary='Update show progress')
-    def do_update(self, show: Show, episode: EpisodeNumber | None = None):
+    def update(self, show: Show, episode: EpisodeNumber | None = None):
         try:
             self.engine.set_episode(show['id'], episode or show['my_progress']+1)
         except utils.TrackmaError as e:
             self.display_error(e)
 
     @command(summary='Set show score')
-    def do_score(self, show: Show, score: Score):
+    def score(self, show: Show, score: Score):
         try:
             self.engine.set_score(show['id'], score)
         except utils.TrackmaError as e:
             self.display_error(e)
 
     @command(summary='Set show status')
-    def do_status(self, show: Show, status: StatusName):
+    def status(self, show: Show, status: StatusName):
         try:
             self.engine.set_status(show['id'], status)
         except utils.TrackmaError as e:
             self.display_error(e)
 
     @command(summary='Set altname')
-    def do_altname(self, show: Show, alt: str = ''):
+    def altname(self, show: Show, alt: str = ''):
         try:
             self.engine.altname(show['id'], alt)
         except utils.TrackmaError as e:
             self.display_error(e)
 
     @command(summary='Upload queued changes')
-    def do_send(self):
+    def send(self):
         try:
             self.engine.list_upload()
         except utils.TrackmaError as e:
             self.display_error(e)
 
     @command(summary='Download remote list')
-    def do_retrieve(self):
+    def retrieve(self):
         try:
             if self.engine.get_queue():
                 if _prompt_yes_no('There are unqueued changes. Overwrite local list?', title='Retrieve list'):
@@ -928,14 +925,14 @@ class Trackma_cmd:
             self.display_error(e)
 
     @command(summary='Clear queue')
-    def do_clearqueue(self):
+    def clearqueue(self):
         try:
             self.engine.queue_clear()
         except utils.TrackmaError as e:
             self.display_error(e)
 
     @command(summary='View queue')
-    def do_viewqueue(self):
+    def viewqueue(self):
         queue = self.engine.get_queue()
         if queue:
             print("Queue:")
@@ -945,7 +942,7 @@ class Trackma_cmd:
             print("Queue is empty.")
 
     @command(aliases=('exit',), summary='Quit the program')
-    def do_quit(self):
+    def quit(self):
         try:
             self.engine.unload()
         except utils.TrackmaError as e:
