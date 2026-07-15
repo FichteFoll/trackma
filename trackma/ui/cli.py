@@ -58,6 +58,10 @@ class CommandError(Exception):
     pass
 
 
+class CommandParseError(CommandError):
+    pass
+
+
 # These classes are used for type hints in command definition.
 class Show:
     pass
@@ -453,7 +457,12 @@ class Trackma_cmd:
         return self.execute_line(line)
 
     def execute_line(self, line):
-        parts = self._parse_command_line(line)
+        try:
+            parts = self._parse_command_line(line)
+        except CommandParseError as e:
+            self.display_error(e)
+            return None
+
         if not parts:
             return None
 
@@ -513,7 +522,7 @@ class Trackma_cmd:
     def _execute_spec(self, spec, args):
         args = self._expand_shortcuts(spec, list(args))
         if not (spec.required <= len(args) <= len(spec.param_names)):
-            raise CommandError(f"Incorrect number of arguments. See `help {spec.name}`")
+            raise CommandError(f"Incorrect number of arguments. Usage: {spec.usage}")
 
         resolved = []
         for index, raw_value in enumerate(args):
@@ -522,7 +531,7 @@ class Trackma_cmd:
         for index in range(len(args), len(spec.param_names)):
             default = spec.defaults[index]
             if default is inspect._empty:
-                raise CommandError(f"Incorrect number of arguments. See `help {spec.name}`")
+                raise CommandError(f"Incorrect number of arguments. Usage: {spec.usage}")
             resolved.append(default)
 
         return spec.func(self, *resolved)
@@ -600,7 +609,7 @@ class Trackma_cmd:
         try:
             return shlex.split(line)
         except ValueError:
-            return []
+            raise CommandParseError('Invalid command input.')
 
     @command(summary='Show program information')
     def about(self):
