@@ -15,6 +15,7 @@
 #
 
 import argparse
+import html
 import inspect
 import os
 import re
@@ -30,7 +31,7 @@ from typing import Any, get_args, get_origin
 from prompt_toolkit import PromptSession
 from prompt_toolkit.completion import Completer, Completion, FuzzyCompleter, WordCompleter
 from prompt_toolkit.shortcuts import CompleteStyle
-from prompt_toolkit.formatted_text import ANSI, HTML
+from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.document import Document
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.utils import get_cwidth
@@ -42,16 +43,17 @@ from trackma import utils
 from trackma.accounts import AccountManager
 from trackma.engine import Engine
 
-_COLOR_RESET = '\033[0m'
-_COLOR_ENGINE = '\033[0;32m'
-_COLOR_DATA = '\033[0;33m'
-_COLOR_API = '\033[0;34m'
-_COLOR_TRACKER = '\033[0;35m'
-_COLOR_ERROR = '\033[0;31m'
-_COLOR_FATAL = '\033[1;31m'
-
-_COLOR_AIRING = '\033[0;34m'
-_COLOR_BEHIND = '\033[0;31m'
+_CLASS_COLORS = {
+    'Engine': 'ansigreen',
+    'Data': 'ansiyellow',
+    'lib': 'ansiblue',
+    'Tracker': 'ansimagenta',
+    'error': 'ansired',
+    'fatal': 'ansibrightred',
+    'airing': 'ansiblue',
+    'behind': 'ansired',
+    'key': 'ansicyan',
+}
 
 
 class CommandError(Exception):
@@ -159,6 +161,36 @@ def _truncate_display(text, max_width):
         result += char
         width += char_width
     return result
+
+
+def _escape_html(text):
+    return html.escape(str(text))
+
+
+def _colored_html(text, color_name):
+    return f'<{color_name}>{_escape_html(text)}</{color_name}>'
+
+
+def _tagged_html(text, color_name=None, *, escape=True):
+    content = _escape_html(text) if escape else str(text)
+    if color_name:
+        return f'<{color_name}>{content}</{color_name}>'
+    return content
+
+
+def _normalize_synopsis(text):
+    synopsis = re.sub(r'<br\s*/?>', '\n', str(text), flags=re.I)
+    lines = [line.strip() for line in synopsis.splitlines()]
+    normalized = []
+    blank = False
+    for line in lines:
+        if line:
+            normalized.append(line)
+            blank = False
+        elif normalized and not blank:
+            normalized.append('')
+            blank = True
+    return '\n'.join(normalized).strip()
 
 
 def _prompt_input(message, *, password=False, default=''):
@@ -752,16 +784,31 @@ class Trackma_cmd:
             self.display_error(e)
             return
 
-        print(show['title'])
-        print("-" * len(show['title']))
-        print(show['url'])
-        print()
+        print_formatted_text(HTML(f'<b>{_escape_html(show["title"])}</b>'))
+        print_formatted_text("-" * len(show['title']))
+        print_formatted_text(show['url'])
+        print_formatted_text()
         altnames = self.engine.altnames()
         if altname := altnames.get(show['id']):
-            print(f"Altname: {altname}")
+            print_formatted_text(HTML(f'<b><ansicyan>Altname</ansicyan></b>: {_escape_html(altname)}'))
 
         for line in details['extra']:
-            print("%s: %s" % line)
+            key, value = line
+            if key == 'Synopsis' and value:
+                synopsis = _normalize_synopsis(value)
+                if '\n' in synopsis:
+                    synopsis = textwrap.indent(synopsis, '  ')
+                    print_formatted_text(HTML(
+                        f'<b><ansicyan>{_escape_html(key)}</ansicyan></b>:\n{_escape_html(synopsis)}'
+                    ))
+                else:
+                    print_formatted_text(HTML(
+                        f'<b><ansicyan>{_escape_html(key)}</ansicyan></b>: {_escape_html(synopsis)}'
+                    ))
+            else:
+                print_formatted_text(HTML(
+                    f'<b><ansicyan>{_escape_html(key)}</ansicyan></b>: {_escape_html(value)}'
+                ))
 
     @command(summary='Search local shows')
     def search(self, pattern: str):
@@ -977,36 +1024,36 @@ class Trackma_cmd:
             print(e)
 
     def display_error(self, e):
-        print("%s%s: %s%s" % (_COLOR_ERROR, type(e).__name__, e, _COLOR_RESET))
+        print_formatted_text(HTML(
+            f'<ansired>{_escape_html(type(e).__name__)}: {_escape_html(e)}</ansired>'
+        ))
 
     def messagehandler(self, classname, msgtype, msg):
         """
         Handles and shows messages coming from
         the engine messenger to provide feedback.
         """
-        color_escape = ''
+        color_name = ''
         match classname:
             case 'Engine':
-                color_escape = _COLOR_ENGINE
+                color_name = 'ansigreen'
             case 'Data':
-                color_escape = _COLOR_DATA
+                color_name = 'ansiyellow'
             case x if x.startswith('lib'):
-                color_escape = _COLOR_API
+                color_name = 'ansiblue'
             case x if x.startswith('Tracker'):
-                color_escape = _COLOR_TRACKER
-
-        color_reset = _COLOR_RESET if color_escape else ''
+                color_name = 'ansimagenta'
 
         if msgtype == messenger.TYPE_INFO:
-            out = f"{color_escape}{classname}: {msg}{color_reset}"
+            out = HTML(_tagged_html(f'{classname}: {msg}', color_name))
         elif msgtype == messenger.TYPE_WARN:
-            out = f"{color_escape}{classname} warning: {msg}{color_reset}"
+            out = HTML(_tagged_html(f'{classname} warning: {msg}', color_name))
         elif self.debug and msgtype == messenger.TYPE_DEBUG:
-            out = f"[D] {color_escape}{classname}: {msg}{color_reset}"
+            out = HTML(_tagged_html(f'[D] {classname}: {msg}', color_name))
         else:
             return  # Unrecognized message, don't show anything
 
-        print_formatted_text(ANSI(out))
+        print_formatted_text(out)
 
     def _guess_status(self, string):
         for k, v in self.engine.mediainfo['statuses_dict'].items():
@@ -1086,11 +1133,11 @@ class Trackma_cmd:
         title_column_length = max_title_length
 
         # Print header
-        print_formatted_text(ANSI("| {0:{1}} {2:{3}} {4:{5}} {6:{7}} |".format(
-            'Index',    col_index_length,
-            'Title',    title_column_length,
-            'Progress', col_episodes_length,
-            'Score',    col_score_length)))
+        print_formatted_text(HTML("| {0:{1}} {2:{3}} {4:{5}} {6:{7}} |".format(
+            _colored_html('Index', 'ansibrightblack'),    col_index_length,
+            _colored_html('Title', 'ansibrightblack'),    title_column_length,
+            _colored_html('Progress', 'ansibrightblack'), col_episodes_length,
+            _colored_html('Score', 'ansibrightblack'),    col_score_length)))
 
         # List shows
         for index, show in showlist:
@@ -1113,17 +1160,17 @@ class Trackma_cmd:
                 estimate = utils.estimate_aired_episodes(show)
                 if estimate and show['my_progress'] < estimate:
                     # User is behind the (estimated) aired episode
-                    colored_title = _COLOR_BEHIND + title_str + _COLOR_RESET
+                    colored_title = f'<ansired>{_escape_html(title_str)}</ansired>'
                 else:
-                    colored_title = _COLOR_AIRING + title_str + _COLOR_RESET
+                    colored_title = f'<ansiblue>{_escape_html(title_str)}</ansiblue>'
             else:
-                colored_title = title_str
+                colored_title = _escape_html(title_str)
 
-            print_formatted_text(ANSI("| {0:^{1}} {2}{3} {4:{5}} {6:^{7}} |".format(
+            print_formatted_text(HTML("| {0:^{1}} {2}{3} {4:{5}} {6:^{7}} |".format(
                 index, col_index_length,
                 colored_title,
-                title_padding,
-                episodes_str, col_episodes_length,
+                _escape_html(title_padding),
+                _escape_html(episodes_str), col_episodes_length,
                 show['my_score'], col_score_length)))
 
         # Print result count
@@ -1321,7 +1368,9 @@ def main():
             main_cmd.run()
     except utils.TrackmaFatal as e:
         main_cmd.forget_account()
-        print("%s%s: %s%s" % (_COLOR_FATAL, type(e).__name__, e, _COLOR_RESET))
+        print_formatted_text(HTML(
+            f'<ansibrightred>{_escape_html(type(e).__name__)}: {_escape_html(e)}</ansibrightred>'
+        ))
     except KeyboardInterrupt:
         if main_cmd.engine:
             try:
