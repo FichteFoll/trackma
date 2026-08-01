@@ -787,6 +787,9 @@ class Engine:
         tracker_list = self._get_tracker_list(my_status)
         guess_show = lru_cache(partial(utils.guess_show, tracker_list=tracker_list))
 
+        new_matched = 0
+        new_unmatched = 0
+
         paths = [path] if path else self.searchdirs
         for searchdir in paths:
             self.msg.debug("Directory: %s" % searchdir)
@@ -795,12 +798,22 @@ class Engine:
             for fullpath, filename in utils.regex_find_videos(searchdir):
                 if self.config['library_full_path']:
                     filename = self._get_relative_path_or_basename(searchdir, fullpath)
-                (library, library_cache) = self._add_show_to_library(
+                (library, library_cache, is_new, matched) = self._add_show_to_library(
                     library, library_cache, rescan, fullpath, filename, tracker_list, guess_show)
+                if is_new:
+                    if matched:
+                        new_matched += 1
+                    else:
+                        new_unmatched += 1
 
             self.msg.debug(f"Time: {time.time() - t:.3}s")
             self.data_handler.library_save(library)
             self.data_handler.library_cache_save(library_cache)
+
+        self.msg.info(
+            f"Scan complete: {new_matched} new file(s) added, "
+            f"{new_unmatched} file(s) could not be matched."
+        )
         return library
 
     def remove_from_library(self, path, filename):
@@ -829,7 +842,8 @@ class Engine:
 
     def _add_show_to_library(self, library, library_cache, rescan, fullpath, filename, tracker_list, guess_show):
         show_id = None
-        if not rescan and filename in library_cache:
+        is_new = filename not in library_cache
+        if not rescan and not is_new:
             # If the filename was already seen before
             # use the cached information, if there's no information (None)
             # then it means it doesn't correspond to any show in the list
@@ -841,7 +855,7 @@ class Engine:
                 else:
                     show_ep_start = show_ep_end = show_ep
             else:
-                return library, library_cache
+                return library, library_cache, is_new, False
         else:
             # If the filename has not been seen, extract
             # the information from the filename and do a fuzzy search
@@ -885,7 +899,7 @@ class Engine:
             for show_ep in range(show_ep_start, show_ep_end+1):
                 library[show_id][show_ep] = fullpath
 
-        return library, library_cache
+        return library, library_cache, is_new, bool(show_id)
 
     def get_episode_path(self, show, episode=0):
         """
