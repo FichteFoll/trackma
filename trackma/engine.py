@@ -312,7 +312,7 @@ class Engine:
                 import importlib.util
                 import pkgutil
 
-                self.msg.info("Importing user hooks...")
+                self.msg.debug("Importing user hooks...")
                 for finder, name, _ in pkgutil.iter_modules([hooks_dir]):
                     # List all the hook files in the hooks folder, import them
                     # and call the init() function if they have them
