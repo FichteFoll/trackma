@@ -837,19 +837,16 @@ class Trackma_cmd:
         choice = _prompt_choice(
             'Add show',
             'Choose show to add:',
-            [(entry['id'], f"({entry['type']}) {entry['title']}") for entry in entries],
+            [(i, f"({entry['type']}) {entry['title']}") for i, entry in enumerate(entries, start=1)],
         )
-        if choice is not None:
-            show = next((entry for entry in entries if entry['id'] == choice), None)
-            if show is None:
-                print("Invalid show.")
-                return
+        if choice is None:
+            return
 
-            # Tell the engine to add the show
-            try:
-                self.engine.add_show(show, self.filter_num)
-            except utils.TrackmaError as e:
-                self.display_error(e)
+        # Tell the engine to add the show
+        try:
+            self.engine.add_show(entries[choice - 1], self.filter_num)
+        except utils.TrackmaError as e:
+            self.display_error(e)
 
     @command(aliases=('del',), summary='Delete a show')
     def delete(self, show: Show):
